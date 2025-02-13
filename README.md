@@ -18,7 +18,7 @@ sudo apt install git -y
 ## Project Setup
 
 ```sh
-# Clone the project (replace with your repo URL)
+# Clone the project
 git clone https://github.com/web3isnice/LiquidationFlashloans.git
 cd LiquidationFlashloans
 
