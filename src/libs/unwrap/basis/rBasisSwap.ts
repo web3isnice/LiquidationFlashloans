@@ -5,7 +5,7 @@ import {
 } from '@solana/spl-token-v2';
 import {
   Transaction,
-  Account,
+  Keypair,
   Connection,
   PublicKey,
   TransactionInstruction,
@@ -13,7 +13,7 @@ import {
 import { getWalletBalance } from 'libs/utils';
 import { MINT_BASIS, MINT_RBASIS, unstakeBasisInstruction } from 'models/instructions/basis/unstake';
 
-export const checkAndUnwrapBasisTokens = async (connection: Connection, payer: Account) => {
+export const checkAndUnwrapBasisTokens = async (connection: Connection, payer: Keypair) => {
   const rBasisPubKey = new PublicKey(MINT_RBASIS);
   // check if wallet has rBasis tokens
   const tokenAmount = await getWalletBalance(connection, rBasisPubKey, payer.publicKey);
@@ -24,7 +24,7 @@ export const checkAndUnwrapBasisTokens = async (connection: Connection, payer: A
 
 export const unstakeBasis = async (
   connection: Connection,
-  payer: Account,
+  payer: Keypair,
   mint: PublicKey,
   amount: number,
 ) => {

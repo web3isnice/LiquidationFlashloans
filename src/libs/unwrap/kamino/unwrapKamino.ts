@@ -1,5 +1,4 @@
-/* eslint-disable no-restricted-syntax,no-continue */
-import { Account, Connection, sendAndConfirmTransaction } from '@solana/web3.js';
+import { Keypair, Connection, sendAndConfirmTransaction } from '@solana/web3.js';
 import {
   assignBlockInfoToTransaction, createTransactionWithExtraBudget, getAssociatedTokenAddressAndData, Kamino,
 } from '@hubbleprotocol/kamino-sdk';
@@ -9,7 +8,7 @@ const cluster = process.env.APP === 'production' ? 'mainnet-beta' : 'devnet';
 
 export const checkAndUnwrapKaminoTokens = async (
   connection: Connection,
-  payer: Account,
+  payer: Keypair,
 ) => {
   const kamino = new Kamino(cluster, connection);
   const config = getConfigByCluster(cluster);

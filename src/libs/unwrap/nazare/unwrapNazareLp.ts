@@ -1,7 +1,5 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
-/* eslint-disable no-restricted-syntax */
 import {
-  Account, Connection, PublicKey, Transaction,
+  Keypair, Connection, PublicKey, Transaction,
 } from '@solana/web3.js';
 import { GGoldcaSDK, VaultId } from 'ggoldca-sdk';
 import { AnchorProvider } from '@project-serum/anchor/dist/cjs/provider';
@@ -41,7 +39,7 @@ async function getNazareVaultData(program: Program<Ggoldca>, mint: PublicKey): P
 
 export const checkAndUnwrapNLPTokens = async (
   connection: Connection,
-  payer: Account,
+  payer: Keypair,
 ) => {
   // Nazare LP tokens 
   const nazareMints = await getNazareTokenMints(connection);
@@ -74,7 +72,7 @@ export const getNazareTokenMints = async (
 
 export const unwrapNazareLp = async (
   connection: Connection,
-  payer: Account,
+  payer: Keypair,
   mint: PublicKey,
   lpAmount: number,
 ) => {
