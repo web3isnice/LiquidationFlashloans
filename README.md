@@ -19,7 +19,7 @@ sudo apt install git -y
 
 ```sh
 # Clone the project (replace with your repo URL)
-git clone https://github.com/web3isnice/LiquidationFlashloans.git
+git clone -b update-(with-issues) https://github.com/web3isnice/LiquidationFlashloans.git
 cd LiquidationFlashloans
 
 # Install dependencies

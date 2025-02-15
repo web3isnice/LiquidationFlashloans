@@ -1,10 +1,10 @@
 import { Account, Connection, PublicKey, Transaction } from '@solana/web3.js';
 import { Jupiter } from '@jup-ag/core';
-import { findAssociatedTokenAddress, toBaseUnit } from 'libs/utils';
+import { findAssociatedTokenAddress } from 'libs/utils';
 import { createFlashLoanInstructions } from 'libs/flashLoan';
 import { refreshObligationInstruction, refreshReserveInstruction, LiquidateObligationAndRedeemReserveCollateral } from 'models/instructions';
 import { logAction } from 'libs/logger';
-import JSBI from 'jsbi';
+import BN from 'bn.js';
 
 export async function liquidateAndRedeem(
   connection: Connection,
@@ -29,7 +29,7 @@ export async function liquidateAndRedeem(
 
   // Get flash loan instructions
   const { borrowInstruction, repayInstruction } = await createFlashLoanInstructions(
-    borrowAmount,
+    new BN(borrowAmount),
     userBorrowTokenAccount,
     market,
     payer.publicKey,
@@ -37,7 +37,7 @@ export async function liquidateAndRedeem(
 
   // Get liquidation instructions
   const liquidateIx = LiquidateObligationAndRedeemReserveCollateral(
-    borrowAmount,
+    new BN(borrowAmount),
     userBorrowTokenAccount,
     userWithdrawTokenAccount,
     userBorrowTokenAccount,
@@ -70,8 +70,7 @@ export async function liquidateAndRedeem(
   logAction('Executing liquidation transaction');
   const txHash = await connection.sendRawTransaction(tx.serialize(), {
     skipPreflight: true,
-    maxRetries: 0,
-    bundleOnly: true
+    maxRetries: 0
   });
 
   // Calculate profit

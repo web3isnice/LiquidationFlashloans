@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { Transaction, Connection, Commitment, ConnectionConfig } from '@solana/web3.js';
-import { CONSTANTS } from './constants';
+import { BOT_CONFIG } from '../config/settings';
 
 export class JitoConnection extends Connection {
   private jitoUrl: string;
@@ -32,8 +32,7 @@ export class JitoConnection extends Connection {
               encoding: 'base64',
               minContextSlot: options?.minContextSlot,
               maxRetries: 0,
-              skipPreflight: true,
-              bundleOnly: true
+              skipPreflight: true
             }
           ]
         },
@@ -52,7 +51,7 @@ export class JitoConnection extends Connection {
     } catch (error) {
       if (this.retryCount < this.maxRetries) {
         this.retryCount++;
-        await new Promise(resolve => setTimeout(resolve, CONSTANTS.RETRY_DELAY_MS));
+        await new Promise(resolve => setTimeout(resolve, BOT_CONFIG.OPERATIONAL.RETRY_DELAY_MS));
         return this.sendRawTransaction(rawTransaction, options);
       }
       throw error;
@@ -61,7 +60,7 @@ export class JitoConnection extends Connection {
     }
   }
 
-  async getLatestBlockhash(commitment?: string): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
+  async getLatestBlockhash(commitmentOrConfig?: Commitment | ConnectionConfig): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
     try {
       const response = await axios.post(
         this.jitoUrl,
@@ -69,7 +68,7 @@ export class JitoConnection extends Connection {
           jsonrpc: '2.0',
           id: 1,
           method: 'getLatestBlockhash',
-          params: [{ commitment }]
+          params: [{ commitment: commitmentOrConfig }]
         },
         {
           headers: {
@@ -90,8 +89,8 @@ export class JitoConnection extends Connection {
     } catch (error) {
       if (this.retryCount < this.maxRetries) {
         this.retryCount++;
-        await new Promise(resolve => setTimeout(resolve, CONSTANTS.RETRY_DELAY_MS));
-        return this.getLatestBlockhash(commitment);
+        await new Promise(resolve => setTimeout(resolve, BOT_CONFIG.OPERATIONAL.RETRY_DELAY_MS));
+        return this.getLatestBlockhash(commitmentOrConfig);
       }
       throw error;
     }
