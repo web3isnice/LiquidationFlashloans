@@ -6,6 +6,7 @@ import { BOT_CONFIG } from '../config/settings';
 import { SwapError } from './errors';
 import { logInfo, logSuccess, metrics } from './logger';
 import { SUCCESS_MESSAGES } from './constants';
+import { SwapResult, SwapSuccessResult } from '../types/jupiter';
 
 export async function swapProfitToSol(
   connection: Connection,
@@ -43,13 +44,14 @@ export async function swapProfitToSol(
       execute(),
       BOT_CONFIG.OPERATIONAL.TRANSACTION_TIMEOUT_MS,
       'Swap transaction timed out'
-    );
+    ) as SwapResult;
 
     if ('error' in result) {
       throw new SwapError(result.error?.toString() || 'Unknown swap error');
     }
 
-    const txHash = result.txid;
+    const successResult = result as SwapSuccessResult;
+    const txHash = successResult.txid;
     
     logSuccess(SUCCESS_MESSAGES.SWAP_SUCCESS, { txHash });
     metrics.addProfit(usdcAmount);
