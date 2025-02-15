@@ -34,8 +34,9 @@
     "@switchboard-xyz/sbv2-lite": "0.1.6",
     "@switchboard-xyz/switchboard-api": "0.2.187",
     "@unstake-it/sol": "0.1.2",
+    "axios": "^1.6.2",
     "bignumber.js": "9.1.1",
-    "bn.js": "5.2.1",
+    "bn.js": "5.2.2",
     "bs58": "5.0.0",
     "buffer-layout": "1.2.2",
     "dotenv": "16.3.1",
@@ -47,11 +48,14 @@
     "jsbi": "4.3.0",
     "lodash": "4.17.21",
     "lru-cache": "7.18.3",
+    "p-retry": "4.6.2",
+    "p-timeout": "4.1.0",
     "rpc-websockets": "7.5.1",
     "snake-case": "3.0.4",
     "ts-node": "10.9.1",
     "tsconfig-paths": "4.2.0",
-    "underscore": "1.13.6"
+    "underscore": "1.13.6",
+    "winston": "3.10.0"
   },
   "devDependencies": {
     "@types/jest": "29.5.3",
