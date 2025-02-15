@@ -1,4 +1,4 @@
-import { Account, Connection } from '@solana/web3.js';
+import { Keypair, Connection } from '@solana/web3.js';
 import { Jupiter } from '@jup-ag/core';
 import JSBI from 'jsbi';
 import pTimeout from 'p-timeout';
@@ -10,7 +10,7 @@ import { SwapResult, SwapSuccessResult } from '../types/jupiter';
 
 export async function swapProfitToSol(
   connection: Connection,
-  payer: Account,
+  payer: Keypair,
   jupiter: Jupiter,
   usdcAmount: number
 ): Promise<string | undefined> {

@@ -1,4 +1,4 @@
-import { Account, Connection } from '@solana/web3.js';
+import { Keypair, Connection } from '@solana/web3.js';
 import { Jupiter } from '@jup-ag/core';
 import { calculateRefreshedObligation } from './refreshObligation';
 import { liquidateAndRedeem } from './actions/liquidateAndRedeem';
@@ -13,7 +13,7 @@ import pRetry from 'p-retry';
 export async function processObligation(
   obligation: any,
   connection: Connection,
-  payer: Account,
+  payer: Keypair,
   jupiter: Jupiter,
   market: any,
   allReserves: any[],

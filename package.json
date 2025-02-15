@@ -5,7 +5,7 @@
   "main": "build/index.js",
   "scripts": {
     "build": "rm -rf build/ && tsc -p tsconfig.json",
-    "start": "ts-node -r tsconfig-paths/register build/liquidate.js",
+    "start": "node -r ts-node/register/transpile-only -r tsconfig-paths/register build/liquidate.js",
     "lint": "eslint . --ext .js --ext .tsx,.ts,.js,.jsx src/ --fix .gitignore",
     "compose-clean": "docker-compose rm -f"
   },

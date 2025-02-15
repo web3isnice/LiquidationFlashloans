@@ -13,8 +13,17 @@ const logFormat = winston.format.printf(({ level, message, timestamp, ...metadat
       if (error.stack) {
         msg += `\nStack: ${error.stack}`;
       }
+      // Include any additional properties from the error object
+      const additionalProps = Object.entries(error)
+        .filter(([key]) => !['name', 'message', 'stack'].includes(key))
+        .reduce((acc, [key, value]) => ({ ...acc, [key]: value }), {});
+      if (Object.keys(additionalProps).length > 0) {
+        msg += `\nAdditional Error Properties: ${JSON.stringify(additionalProps, null, 2)}`;
+      }
+    } else if (typeof error === 'object') {
+      msg += `\nError Details: ${JSON.stringify(error, null, 2)}`;
     } else {
-      msg += `\nError: ${JSON.stringify(error)}`;
+      msg += `\nError: ${error}`;
     }
   }
 

@@ -1,4 +1,4 @@
-import { Account, Connection, PublicKey, Transaction } from '@solana/web3.js';
+import { Keypair, Connection, PublicKey, Transaction } from '@solana/web3.js';
 import { Jupiter } from '@jup-ag/core';
 import { findAssociatedTokenAddress } from 'libs/utils';
 import { createFlashLoanInstructions } from 'libs/flashLoan';
@@ -8,14 +8,17 @@ import BN from 'bn.js';
 
 export async function liquidateAndRedeem(
   connection: Connection,
-  payer: Account,
-  borrowAmount: string,
+  payer: Keypair,
+  borrowAmount: string | BN,
   borrowSymbol: string,
   withdrawSymbol: string,
   market: any,
   obligation: any,
   jupiter: Jupiter,
 ): Promise<{ txHash: string; profit: number }> {
+  // Convert borrowAmount to BN if it's a string
+  const borrowAmountBN = typeof borrowAmount === 'string' ? new BN(borrowAmount) : borrowAmount;
+
   // Get token accounts
   const userBorrowTokenAccount = await findAssociatedTokenAddress(
     payer.publicKey,
@@ -29,7 +32,7 @@ export async function liquidateAndRedeem(
 
   // Get flash loan instructions
   const { borrowInstruction, repayInstruction } = await createFlashLoanInstructions(
-    new BN(borrowAmount),
+    borrowAmountBN,
     userBorrowTokenAccount,
     market,
     payer.publicKey,
@@ -37,7 +40,7 @@ export async function liquidateAndRedeem(
 
   // Get liquidation instructions
   const liquidateIx = LiquidateObligationAndRedeemReserveCollateral(
-    new BN(borrowAmount),
+    borrowAmountBN,
     userBorrowTokenAccount,
     userWithdrawTokenAccount,
     userBorrowTokenAccount,
@@ -74,7 +77,7 @@ export async function liquidateAndRedeem(
   });
 
   // Calculate profit
-  const profit = calculateProfit(borrowAmount, withdrawSymbol, market);
+  const profit = calculateProfit(borrowAmountBN.toString(), withdrawSymbol, market);
 
   return { txHash, profit };
 }
