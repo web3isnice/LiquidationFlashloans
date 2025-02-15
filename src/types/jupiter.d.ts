@@ -9,7 +9,7 @@ export interface SwapSuccessResult {
 }
 
 export interface SwapErrorResult {
-  error: TransactionError;
+  error: TransactionError | undefined;
 }
 
 export type SwapResult = SwapSuccessResult | SwapErrorResult;

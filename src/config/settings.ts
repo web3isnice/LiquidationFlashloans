@@ -20,7 +20,7 @@ export const BOT_CONFIG = {
   ENV: process.env.APP || 'production',
   JITO_ENDPOINT: process.env.JITO_ENDPOINT || DEFAULT_JITO_ENDPOINT,
   SECRET_PATH: process.env.SECRET_PATH,
-  THROTTLE: process.env.THROTTLE ? parseInt(process.env.THROTTLE) : undefined,
+  THROTTLE: process.env.THROTTLE ? Number(process.env.THROTTLE) : undefined,
 
   // Token Constants
   TOKENS: {
@@ -59,6 +59,13 @@ export const BOT_CONFIG = {
   ERROR_HANDLING: {
     MAX_CONSECUTIVE_ERRORS: 5,
     ERROR_COOLDOWN_MS: 5000, // 5 seconds
+  },
+
+  // Logging Settings
+  LOGGING: {
+    LOG_FILE_MAX_SIZE: 10 * 1024 * 1024, // 10MB
+    LOG_MAX_FILES: 5,
+    STATS_INTERVAL_MS: 300000, // 5 minutes
   },
 
   // Status Messages

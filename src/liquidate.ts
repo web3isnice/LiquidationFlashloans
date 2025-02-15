@@ -5,19 +5,13 @@ import {
 } from '@solana/web3.js';
 import dotenv from 'dotenv';
 import {
-  getObligations, getReserves, sortBorrows,
+  getObligations, getReserves,
 } from 'libs/utils';
 import { getTokensOracleData } from 'libs/pyth';
-import { Borrow, calculateRefreshedObligation } from 'libs/refreshObligation';
 import { readSecret } from 'libs/secret';
-import { liquidateAndRedeem } from 'libs/actions/liquidateAndRedeem';
 import { Jupiter } from '@jup-ag/core';
 import { unwrapTokens } from 'libs/unwrap/unwrapToken';
-import { parseObligation } from '@solendprotocol/solend-sdk';
 import { getMarkets } from './config';
-import JSBI from 'jsbi';
-import pRetry from 'p-retry';
-import pTimeout from 'p-timeout';
 import { JitoConnection } from './libs/jito';
 import { BOT_CONFIG } from './config/settings';
 import { 
@@ -37,70 +31,10 @@ import {
   logWarning,
   metrics
 } from 'libs/logger';
-import { CONSTANTS, ERROR_MESSAGES, SUCCESS_MESSAGES } from 'libs/constants';
+import { ERROR_MESSAGES, SUCCESS_MESSAGES } from 'libs/constants';
+import { processObligation } from 'libs/processObligation';
 
 dotenv.config();
-
-async function swapProfitToSol(
-  connection: JitoConnection,
-  payer: Account,
-  jupiter: Jupiter,
-  usdcAmount: number
-): Promise<string | undefined> {
-  try {
-    const swapAmount = Math.floor((usdcAmount - BOT_CONFIG.FINANCIAL.MIN_USDC_BUFFER) * 1e6);
-    if (swapAmount <= 0) return undefined;
-
-    logInfo(`Swapping ${usdcAmount - BOT_CONFIG.FINANCIAL.MIN_USDC_BUFFER} USDC to SOL`);
-
-    const routes = await pTimeout(
-      jupiter.computeRoutes({
-        inputMint: BOT_CONFIG.TOKENS.USDC,
-        outputMint: BOT_CONFIG.TOKENS.WSOL,
-        amount: JSBI.BigInt(swapAmount),
-        // No slippage check for maintenance swaps
-        slippageBps: 10000 // Allow up to 100% slippage
-      }),
-      BOT_CONFIG.RPC.TIMEOUT_MS,
-      'Route computation timed out'
-    );
-
-    if (routes.routesInfos.length === 0) {
-      throw new SwapError('No routes found for USDC to SOL swap');
-    }
-
-    const { execute } = await jupiter.exchange({
-      routeInfo: routes.routesInfos[0]
-    });
-
-    const result = await pTimeout(
-      execute(),
-      BOT_CONFIG.OPERATIONAL.TRANSACTION_TIMEOUT_MS,
-      'Swap transaction timed out'
-    );
-
-    if ('error' in result) {
-      throw new SwapError(result.error?.toString() || 'Unknown swap error');
-    }
-
-    const txHash = result.txid;
-    
-    logSuccess(SUCCESS_MESSAGES.SWAP_SUCCESS, { txHash });
-    metrics.addProfit(usdcAmount);
-    metrics.incrementSuccessfulSwaps();
-    
-    return txHash;
-  } catch (error) {
-    metrics.incrementFailedSwaps();
-    if (error instanceof Error) {
-      throw new SwapError(error.message, {
-        usdcAmount,
-        originalError: error
-      });
-    }
-    throw error;
-  }
-}
 
 async function runLiquidator() {
   try {

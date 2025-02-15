@@ -1,5 +1,5 @@
 import winston from 'winston';
-import { CONSTANTS } from './constants';
+import { BOT_CONFIG } from '../config/settings';
 
 const logFormat = winston.format.printf(({ level, message, timestamp, ...metadata }) => {
   let msg = `${timestamp} [${level}] : ${message}`;
@@ -42,13 +42,13 @@ const loggerOptions = {
     new winston.transports.File({ 
       filename: 'logs/error.log', 
       level: 'error',
-      maxsize: CONSTANTS.LOG_FILE_MAX_SIZE,
-      maxFiles: CONSTANTS.LOG_MAX_FILES,
+      maxsize: BOT_CONFIG.LOGGING.LOG_FILE_MAX_SIZE,
+      maxFiles: BOT_CONFIG.LOGGING.LOG_MAX_FILES,
     }),
     new winston.transports.File({ 
       filename: 'logs/combined.log',
-      maxsize: CONSTANTS.LOG_FILE_MAX_SIZE,
-      maxFiles: CONSTANTS.LOG_MAX_FILES,
+      maxsize: BOT_CONFIG.LOGGING.LOG_FILE_MAX_SIZE,
+      maxFiles: BOT_CONFIG.LOGGING.LOG_MAX_FILES,
     })
   ]
 };
@@ -58,7 +58,7 @@ export const logger = winston.createLogger(loggerOptions);
 // Add convenience methods with emojis and status indicators
 export const logSuccess = (message: string, meta?: any) => {
   logger.info(`✅ SUCCESS: ${message}`, meta);
-  console.log(`✅ ${message}`); // Also log to console for visibility
+  console.log(`✅ ${message}`);
 };
 
 export const logWarning = (message: string, meta?: any) => {
@@ -148,4 +148,4 @@ setInterval(() => {
     uptime: process.uptime().toFixed(2) + 's',
     memory: process.memoryUsage().heapUsed / 1024 / 1024 + 'MB'
   });
-}, CONSTANTS.STATS_INTERVAL_MS);
+}, BOT_CONFIG.LOGGING.STATS_INTERVAL_MS);
