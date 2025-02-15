@@ -36,7 +36,7 @@
     "@unstake-it/sol": "0.1.2",
     "axios": "^1.6.2",
     "bignumber.js": "9.1.1",
-    "bn.js": "5.2.2",
+    "bn.js": "5.2.1",
     "bs58": "5.0.0",
     "buffer-layout": "1.2.2",
     "dotenv": "16.3.1",
