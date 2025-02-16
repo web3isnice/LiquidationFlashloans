@@ -37,7 +37,7 @@ npm install --legacy-peer-deps
 touch keypair.json
 
 # Add your private key in JSON array format
-# Example format: [1,2,3,...,32] (32 bytes)
+# Example format: [1,2,3,...] (32 or 64 bytes)
 ```
 
 ### Create .env file:
