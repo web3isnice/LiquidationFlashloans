@@ -1,6 +1,5 @@
 import {
   Keypair,
-  Connection,
   PublicKey,
 } from '@solana/web3.js';
 import dotenv from 'dotenv';
@@ -9,7 +8,6 @@ import {
 } from 'libs/utils';
 import { getTokensOracleData } from 'libs/pyth';
 import { createKeypairFromSecret } from 'libs/secret';
-import { Jupiter } from '@jup-ag/core';
 import { unwrapTokens } from 'libs/unwrap/unwrapToken';
 import { getMarkets } from './config';
 import { BOT_CONFIG } from './config/settings';
@@ -39,11 +37,9 @@ dotenv.config();
 async function checkInitialSetup() {
   try {
     logInfo('Starting initial setup check...');
-    // This will throw if the keypair is invalid
     const payer = createKeypairFromSecret('keypair');
     logInfo('Keypair loaded successfully', { publicKey: payer.publicKey.toString() });
     
-    // Validate environment variables
     if (!BOT_CONFIG.ENV) {
       throw new ConfigurationError('APP environment variable is not set');
     }
@@ -59,42 +55,12 @@ async function checkInitialSetup() {
   }
 }
 
-async function checkHealth(connection: Connection, payer: Keypair) {
+async function checkHealth(connection: JitoConnection, payer: Keypair) {
   try {
     logInfo('Starting health check...');
     
-    // Get latest blockhash first to verify RPC connection
-    logInfo('Checking RPC connection...');
-    const { blockhash } = await connection.getLatestBlockhash()
-      .catch((error) => {
-        throw new RpcError(`${ERROR_MESSAGES.RPC_ERROR}: ${error.message}`);
-      });
-
-    if (!blockhash) {
-      throw new RpcError('Failed to get latest blockhash');
-    }
-    logInfo('RPC connection verified');
-
-    // Check SOL balance with retry
-    let retryCount = 0;
-    const maxRetries = 3;
-    let solBalance;
-
-    logInfo('Checking SOL balance...');
-    while (retryCount < maxRetries) {
-      try {
-        solBalance = await connection.getBalance(payer.publicKey, 'confirmed');
-        break;
-      } catch (error) {
-        retryCount++;
-        logWarning(`Failed to get balance (attempt ${retryCount}/${maxRetries})`, { error });
-        if (retryCount === maxRetries) {
-          throw new RpcError(`Failed to get balance after ${maxRetries} attempts: ${error.message}`);
-        }
-        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)); // Exponential backoff
-      }
-    }
-
+    // Check SOL balance
+    const solBalance = await connection.getBalance(payer.publicKey);
     if (solBalance < BOT_CONFIG.FINANCIAL.MIN_SOL_BALANCE) {
       throw new InsufficientFundsError(ERROR_MESSAGES.INSUFFICIENT_SOL);
     }
@@ -108,6 +74,13 @@ async function checkHealth(connection: Connection, payer: Keypair) {
         heapTotal: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)}MB`
       });
     }
+
+    // Check RPC connection by getting latest blockhash
+    const { blockhash } = await connection.getLatestBlockhash();
+    if (!blockhash) {
+      throw new RpcError('Failed to get latest blockhash');
+    }
+    logInfo('RPC connection verified');
 
     logSuccess('Health check passed', {
       solBalance: solBalance / 1e9,
@@ -142,19 +115,20 @@ async function runLiquidator() {
     }
     logInfo(`Found ${markets.length} markets`);
 
-    // Create regular Solana connection for standard RPC operations
-    logInfo('Connecting to Solana RPC...', { endpoint: BOT_CONFIG.SOLANA_RPC_ENDPOINT });
-    const connection = new Connection(BOT_CONFIG.SOLANA_RPC_ENDPOINT, {
-      commitment: 'confirmed',
-      confirmTransactionInitialTimeout: BOT_CONFIG.OPERATIONAL.TRANSACTION_TIMEOUT_MS
+    // Create Jito connection with both endpoints
+    logInfo('Initializing Jito connection...', { 
+      jitoEndpoint: BOT_CONFIG.JITO_ENDPOINT,
+      solanaEndpoint: BOT_CONFIG.SOLANA_RPC_ENDPOINT
     });
-
-    // Create Jito connection for transactions and bundles
-    logInfo('Connecting to Jito RPC...', { endpoint: BOT_CONFIG.JITO_ENDPOINT });
-    const jitoConnection = new JitoConnection(BOT_CONFIG.JITO_ENDPOINT, {
-      commitment: 'confirmed',
-      confirmTransactionInitialTimeout: BOT_CONFIG.OPERATIONAL.TRANSACTION_TIMEOUT_MS
-    });
+    
+    const connection = new JitoConnection(
+      BOT_CONFIG.JITO_ENDPOINT,
+      BOT_CONFIG.SOLANA_RPC_ENDPOINT,
+      {
+        commitment: 'confirmed',
+        confirmTransactionInitialTimeout: BOT_CONFIG.OPERATIONAL.TRANSACTION_TIMEOUT_MS
+      }
+    );
     
     if (!BOT_CONFIG.SECRET_PATH) {
       throw new ConfigurationError(ERROR_MESSAGES.NO_SECRET_PATH);
@@ -162,19 +136,11 @@ async function runLiquidator() {
 
     const payer = createKeypairFromSecret('keypair');
 
-    // Initial health check using regular Solana RPC
+    // Initial health check
     const isHealthy = await checkHealth(connection, payer);
     if (!isHealthy) {
       throw new Error(ERROR_MESSAGES.HEALTH_CHECK_FAILED);
     }
-    
-    logInfo('Initializing Jupiter SDK...');
-    const jupiter = await Jupiter.load({
-      connection, // Use regular Solana RPC for Jupiter
-      cluster: 'mainnet-beta',
-      user: payer,
-      wrapUnwrapSOL: false,
-    });
 
     logSuccess(SUCCESS_MESSAGES.STARTUP, {
       environment: BOT_CONFIG.ENV,
@@ -193,13 +159,13 @@ async function runLiquidator() {
       logInfo(`Starting epoch ${epoch}`);
       for (const market of markets) {
         try {
-          // Periodic health check using regular Solana RPC
+          // Periodic health check
           const isHealthy = await checkHealth(connection, payer);
           if (!isHealthy) {
             throw new Error(ERROR_MESSAGES.HEALTH_CHECK_FAILED);
           }
 
-          logInfo(`Fetching data for market ${market.name}...`);
+          logInfo(`Processing market: ${market.name}`);
           const tokensOracle = await getTokensOracleData(connection, market);
           if (!tokensOracle || tokensOracle.length === 0) {
             throw new Error('Failed to fetch token oracle data');
@@ -215,7 +181,7 @@ async function runLiquidator() {
             throw new Error('Failed to fetch reserves');
           }
 
-          logInfo('Processing market', {
+          logInfo('Market data fetched', {
             marketName: market.name,
             marketAddress: market.address,
             obligationCount: allObligations.length,
@@ -230,9 +196,8 @@ async function runLiquidator() {
               batch.map(obligation => 
                 processObligation(
                   obligation,
-                  jitoConnection, // Use Jito connection for transactions
+                  connection,
                   payer,
-                  jupiter,
                   market,
                   allReserves,
                   tokensOracle

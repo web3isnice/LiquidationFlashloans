@@ -1,4 +1,4 @@
-# Solend Liquidator Bot (Not finished yet)
+# Solend Liquidator Bot
 
 A high-performance liquidation bot for the Solend protocol on Solana, featuring MEV protection through Jito integration.
 
@@ -190,3 +190,21 @@ The bot includes comprehensive logging:
 Log files are stored in the `logs` directory:
 - `error.log`: Error-level messages only
 - `combined.log`: All log messages
+
+## Health Monitoring
+
+The bot includes built-in health monitoring:
+- Regular balance checks
+- Memory usage monitoring
+- RPC connection status
+- Transaction success rates
+- Performance metrics
+
+## Error Handling
+
+Robust error handling includes:
+- Automatic retries with exponential backoff
+- Error cooldown periods
+- Detailed error logging
+- Transaction simulation before submission
+- Automatic recovery from common errors

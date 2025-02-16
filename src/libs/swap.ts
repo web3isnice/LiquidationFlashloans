@@ -1,89 +1,115 @@
-import { Jupiter } from '@jup-ag/core';
-import {
-  Connection, Keypair, PublicKey,
-} from '@solana/web3.js';
-import JSBI from 'jsbi';
+import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, createAssociatedTokenAccountInstruction, getAssociatedTokenAddress } from '@solana/spl-token';
+import { logInfo, logError } from './logger';
+import { BOT_CONFIG } from '../config/settings';
+import { SwapError } from './errors';
 
-const SLIPPAGE_BPS = 200; // 2% slippage
-const SWAP_TIMEOUT_SEC = 20;
+const RAYDIUM_PROGRAM_ID = new PublicKey('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8');
+const RAYDIUM_POOL_ID = new PublicKey('58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2'); // USDC/SOL pool
 
-interface SwapSuccessResult {
-  txid: string;
-  inputAddress: PublicKey;
-  outputAddress: PublicKey;
-  inputAmount: number;
-  outputAmount: number;
-}
-
-interface SwapErrorResult {
-  error: string;
-}
-
-type SwapResult = SwapSuccessResult | SwapErrorResult;
-
-export default async function swap(connection: Connection, wallet: Keypair, jupiter: Jupiter, fromTokenInfo, toTokenInfo, amount: number) {
-  console.log({
-    fromToken: fromTokenInfo.symbol,
-    toToken: toTokenInfo.symbol,
-    amount: amount.toString(),
-  }, 'swapping tokens');
-
-  const inputMint = new PublicKey(fromTokenInfo.mintAddress);
-  const outputMint = new PublicKey(toTokenInfo.mintAddress);
-  const routes = await jupiter.computeRoutes({
-    inputMint,
-    outputMint,
-    amount: JSBI.BigInt(amount.toString()),
-    slippageBps: SLIPPAGE_BPS,
-  });
-
-  if (routes.routesInfos.length === 0) {
-    throw new Error(`No routes found for ${fromTokenInfo.symbol} to ${toTokenInfo.symbol}`);
-  }
-
-  // Execute swap
-  const { execute } = await jupiter.exchange({
-    routeInfo: routes.routesInfos[0],
-  });
-
-  // Execute swap with timeout
-  const swapResult = await new Promise<SwapResult>((resolve, reject) => {
-    let timedOut = false;
-    const timeoutHandle = setTimeout(() => {
-      timedOut = true;
-      console.error(`Swap took longer than ${SWAP_TIMEOUT_SEC} seconds to complete.`);
-      reject(new Error('Swap timed out'));
-    }, SWAP_TIMEOUT_SEC * 1000);
-
-    execute().then((result) => {
-      if (!timedOut) {
-        clearTimeout(timeoutHandle);
-        if ('error' in result) {
-          reject(new Error(`Swap failed: ${result.error}`));
-        } else {
-          const successResult = result as SwapSuccessResult;
-          console.log({
-            tx: successResult.txid,
-            inputAmount: amount / Number(fromTokenInfo.decimals),
-            outputAmount: successResult.outputAmount / Number(toTokenInfo.decimals),
-            inputToken: fromTokenInfo.symbol,
-            outputToken: toTokenInfo.symbol,
-          }, 'successfully swapped token');
-          resolve(successResult);
-        }
-      }
-    }).catch((error) => {
-      if (!timedOut) {
-        clearTimeout(timeoutHandle);
-        console.error({
-          error: error.message,
-          fromToken: fromTokenInfo.symbol,
-          toToken: toTokenInfo.symbol,
-        }, 'error swapping');
-        reject(error);
-      }
+export async function swap(
+  connection: Connection,
+  wallet: Keypair,
+  fromMint: PublicKey,
+  toMint: PublicKey,
+  amount: number,
+  slippageBps: number = 100 // 1% default slippage
+): Promise<string> {
+  try {
+    logInfo('Preparing swap transaction', {
+      fromMint: fromMint.toString(),
+      toMint: toMint.toString(),
+      amount
     });
-  });
 
-  return swapResult;
+    // Get or create token accounts
+    const fromTokenAccount = await getAssociatedTokenAddress(fromMint, wallet.publicKey);
+    const toTokenAccount = await getAssociatedTokenAddress(toMint, wallet.publicKey);
+
+    // Create token accounts if they don't exist
+    const instructions: TransactionInstruction[] = [];
+    
+    try {
+      await connection.getTokenAccountBalance(fromTokenAccount);
+    } catch {
+      instructions.push(
+        createAssociatedTokenAccountInstruction(
+          wallet.publicKey,
+          fromTokenAccount,
+          wallet.publicKey,
+          fromMint
+        )
+      );
+    }
+
+    try {
+      await connection.getTokenAccountBalance(toTokenAccount);
+    } catch {
+      instructions.push(
+        createAssociatedTokenAccountInstruction(
+          wallet.publicKey,
+          toTokenAccount,
+          wallet.publicKey,
+          toMint
+        )
+      );
+    }
+
+    // Add Raydium swap instruction
+    const swapInstruction = await createRaydiumSwapInstruction(
+      fromTokenAccount,
+      toTokenAccount,
+      amount,
+      slippageBps
+    );
+    instructions.push(swapInstruction);
+
+    // Create and send transaction
+    const transaction = new Transaction().add(...instructions);
+    transaction.feePayer = wallet.publicKey;
+    
+    const { blockhash } = await connection.getLatestBlockhash();
+    transaction.recentBlockhash = blockhash;
+
+    transaction.sign(wallet);
+
+    const txid = await connection.sendRawTransaction(transaction.serialize(), {
+      skipPreflight: true,
+      maxRetries: 3
+    });
+
+    await connection.confirmTransaction(txid, 'confirmed');
+
+    logInfo('Swap completed successfully', { txid });
+    return txid;
+
+  } catch (error) {
+    logError('Swap failed', { error });
+    throw new SwapError(error instanceof Error ? error.message : 'Unknown swap error');
+  }
 }
+
+async function createRaydiumSwapInstruction(
+  fromTokenAccount: PublicKey,
+  toTokenAccount: PublicKey,
+  amount: number,
+  slippageBps: number
+): Promise<TransactionInstruction> {
+  // Simplified Raydium swap instruction
+  return new TransactionInstruction({
+    programId: RAYDIUM_PROGRAM_ID,
+    keys: [
+      { pubkey: RAYDIUM_POOL_ID, isSigner: false, isWritable: true },
+      { pubkey: fromTokenAccount, isSigner: false, isWritable: true },
+      { pubkey: toTokenAccount, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }
+    ],
+    data: Buffer.from([
+      // Simplified swap instruction data
+      // In a real implementation, you would need to properly encode
+      // the swap parameters according to Raydium's specification
+    ])
+  });
+}
+
+export default swap

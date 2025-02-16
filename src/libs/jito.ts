@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Transaction, Connection, Commitment, ConnectionConfig, PublicKey, GetBalanceConfig } from '@solana/web3.js';
+import { Transaction, Connection, Commitment, ConnectionConfig, PublicKey } from '@solana/web3.js';
 import { BOT_CONFIG } from '../config/settings';
 import { logError, logInfo, logWarning } from './logger';
 
@@ -37,24 +37,30 @@ export class JitoConnection extends Connection {
     '3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT'
   ];
 
-  constructor(endpoint: string, commitmentOrConfig?: Commitment | ConnectionConfig) {
-    super(endpoint, commitmentOrConfig);
-    logInfo('Initializing Jito connection', { endpoint });
+  private readonly regularConnection: Connection;
+  private readonly jitoEndpoint: string;
+
+  constructor(jitoEndpoint: string, regularEndpoint: string, commitmentOrConfig?: Commitment | ConnectionConfig) {
+    super(regularEndpoint, commitmentOrConfig);
+    this.jitoEndpoint = jitoEndpoint;
+    this.regularConnection = new Connection(regularEndpoint, commitmentOrConfig);
+    logInfo('Initialized Jito connection', { jitoEndpoint, regularEndpoint });
   }
 
-  private async makeJitoRequest<T>(method: string, params: any[], isTransactionMethod: boolean = false): Promise<T> {
+  // Public method to get the regular connection for Jupiter
+  public getRegularConnection(): Connection {
+    return this.regularConnection;
+  }
+
+  private async makeJitoRequest<T>(method: string, params: any[]): Promise<T> {
     try {
       logInfo(`Making Jito RPC request: ${method}`, { 
-        endpoint: this.rpcEndpoint,
+        endpoint: this.jitoEndpoint,
         attempt: this.retryCount + 1 
       });
-      
-      const endpoint = isTransactionMethod 
-        ? `${this.rpcEndpoint}/api/v1/transactions`
-        : this.rpcEndpoint;
 
       const response = await axios.post<JitoResponse<T>>(
-        endpoint,
+        this.jitoEndpoint,
         {
           jsonrpc: '2.0',
           id: 1,
@@ -73,11 +79,10 @@ export class JitoConnection extends Connection {
         throw new Error(`Jito error: ${JSON.stringify(response.data.error)}`);
       }
 
-      logInfo(`Jito RPC request successful: ${method}`);
       return response.data.result as T;
     } catch (error) {
       logWarning(`Jito RPC request failed: ${method}`, {
-        endpoint: this.rpcEndpoint,
+        endpoint: this.jitoEndpoint,
         attempt: this.retryCount + 1,
         error: error instanceof Error ? error.message : error
       });
@@ -85,53 +90,37 @@ export class JitoConnection extends Connection {
       if (this.retryCount < this.maxRetries) {
         this.retryCount++;
         const delay = BOT_CONFIG.OPERATIONAL.RETRY_DELAY_MS * Math.pow(2, this.retryCount - 1);
-        logInfo(`Retrying in ${delay}ms...`);
         await new Promise(resolve => setTimeout(resolve, delay));
-        return this.makeJitoRequest(method, params, isTransactionMethod);
+        return this.makeJitoRequest(method, params);
       }
 
-      logError(`Jito RPC request failed after ${this.maxRetries} attempts: ${method}`);
       throw error;
     } finally {
-      if (this.retryCount >= this.maxRetries) {
-        this.retryCount = 0;
-      }
+      this.retryCount = 0;
     }
   }
 
   override async getLatestBlockhash(commitmentOrConfig?: Commitment | ConnectionConfig): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
     try {
-      logInfo('Getting latest blockhash...');
-      const result = await this.makeJitoRequest<{
-        blockhash: string;
-        lastValidBlockHeight: number;
-      }>('getLatestBlockhash', [{ commitment: commitmentOrConfig || this.commitment }]);
-
-      if (!result || !result.blockhash) {
-        throw new Error('Invalid response from getLatestBlockhash');
-      }
-
-      logInfo('Successfully retrieved latest blockhash');
-      return {
-        blockhash: result.blockhash,
-        lastValidBlockHeight: result.lastValidBlockHeight + 150 // Add ~1 minute buffer
-      };
+      return await this.regularConnection.getLatestBlockhash(commitmentOrConfig);
     } catch (error) {
-      logError('Failed to get latest blockhash', { error });
-      throw error;
+      logError('Failed to get latest blockhash from regular connection, trying Jito endpoint', { error });
+      try {
+        const result = await this.makeJitoRequest<{ blockhash: string; lastValidBlockHeight: number }>(
+          'getLatestBlockhash',
+          []
+        );
+        return result;
+      } catch (jitoError) {
+        logError('Failed to get latest blockhash from both endpoints', { error: jitoError });
+        throw jitoError;
+      }
     }
   }
 
-  override async getBalance(publicKey: PublicKey, commitmentOrConfig?: Commitment | GetBalanceConfig): Promise<number> {
+  override async getBalance(publicKey: PublicKey, commitmentOrConfig?: Commitment | ConnectionConfig): Promise<number> {
     try {
-      logInfo('Getting account balance...', { publicKey: publicKey.toString() });
-      const result = await this.makeJitoRequest<number>(
-        'getBalance',
-        [publicKey.toString(), { commitment: (typeof commitmentOrConfig === 'string' ? commitmentOrConfig : commitmentOrConfig?.commitment) || this.commitment }]
-      );
-      
-      logInfo('Successfully retrieved balance', { publicKey: publicKey.toString(), balance: result });
-      return result;
+      return await this.regularConnection.getBalance(publicKey, commitmentOrConfig);
     } catch (error) {
       logError('Failed to get balance', { error, publicKey: publicKey.toString() });
       throw error;
@@ -147,11 +136,10 @@ export class JitoConnection extends Connection {
       tx.serialize().toString('base64')
     );
 
-    const result = await this.makeJitoRequest<BundleResult>(
-      'sendBundle',
-      [encodedTransactions, { encoding: 'base64' }],
-      true // Use transactions endpoint
-    );
+    const result = await this.makeJitoRequest<BundleResult>('sendBundle', [
+      encodedTransactions,
+      { encoding: 'base64' }
+    ]);
 
     return result.bundle_id;
   }
@@ -205,19 +193,15 @@ export class JitoConnection extends Connection {
       const transaction = Transaction.from(rawTransaction);
       const serializedTransaction = transaction.serialize().toString('base64');
 
-      return await this.makeJitoRequest<string>(
-        'sendTransaction',
-        [
-          serializedTransaction,
-          {
-            encoding: 'base64',
-            minContextSlot: options?.minContextSlot,
-            maxRetries: 0,
-            skipPreflight: true
-          }
-        ],
-        true // Use transactions endpoint
-      );
+      return await this.makeJitoRequest<string>('sendTransaction', [
+        serializedTransaction,
+        {
+          encoding: 'base64',
+          minContextSlot: options?.minContextSlot,
+          maxRetries: 0,
+          skipPreflight: true
+        }
+      ]);
     } catch (error) {
       if (this.retryCount < this.maxRetries) {
         this.retryCount++;
