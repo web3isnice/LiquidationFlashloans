@@ -1,4 +1,4 @@
-# Solend Liquidator Bot
+# Solend Liquidator Bot (Not finished yet)
 
 A high-performance liquidation bot for the Solend protocol on Solana, featuring MEV protection through Jito integration.
 
