@@ -23,6 +23,120 @@ interface BundleStatus {
   landed_slot: number | null;
 }
 
+class RateLimiter {
+  private requestQueue: number[] = [];
+  private dailyRequests: number = 0;
+  private monthlyRequests: number = 0;
+  private lastReset: {
+    daily: number;
+    monthly: number;
+  } = {
+    daily: Date.now(),
+    monthly: Date.now()
+  };
+
+  private readonly maxRequestsPerSecond: number;
+  private readonly burstRequests: number;
+  private readonly cooldownMs: number;
+  private readonly dailyLimit: number;
+  private readonly monthlyLimit: number;
+
+  constructor(
+    maxRequestsPerSecond: number,
+    burstRequests: number,
+    cooldownMs: number,
+    dailyLimit: number,
+    monthlyLimit: number
+  ) {
+    this.maxRequestsPerSecond = maxRequestsPerSecond;
+    this.burstRequests = burstRequests;
+    this.cooldownMs = cooldownMs;
+    this.dailyLimit = dailyLimit;
+    this.monthlyLimit = monthlyLimit;
+  }
+
+  private resetCounters() {
+    const now = Date.now();
+    
+    // Reset daily counter if 24 hours have passed
+    if (now - this.lastReset.daily >= 86400000) {
+      this.dailyRequests = 0;
+      this.lastReset.daily = now;
+    }
+    
+    // Reset monthly counter if 30 days have passed
+    if (now - this.lastReset.monthly >= 2592000000) {
+      this.monthlyRequests = 0;
+      this.lastReset.monthly = now;
+    }
+  }
+
+  private async handleLimitExceeded(type: 'burst' | 'daily' | 'monthly'): Promise<void> {
+    const delays = {
+      burst: this.cooldownMs,
+      daily: 60000, // 1 minute
+      monthly: 300000 // 5 minutes
+    };
+
+    logWarning(`${type.charAt(0).toUpperCase() + type.slice(1)} rate limit reached, cooling down...`);
+    await new Promise(resolve => setTimeout(resolve, delays[type]));
+  }
+
+  async checkRateLimit(): Promise<void> {
+    this.resetCounters();
+    
+    const now = Date.now();
+    
+    // Check monthly limit
+    if (this.monthlyRequests >= this.monthlyLimit) {
+      await this.handleLimitExceeded('monthly');
+      return this.checkRateLimit();
+    }
+    
+    // Check daily limit
+    if (this.dailyRequests >= this.dailyLimit) {
+      await this.handleLimitExceeded('daily');
+      return this.checkRateLimit();
+    }
+    
+    // Remove requests older than 1 second
+    this.requestQueue = this.requestQueue.filter(timestamp => now - timestamp < 1000);
+    
+    // Check burst limit
+    if (this.requestQueue.length >= this.burstRequests) {
+      await this.handleLimitExceeded('burst');
+      return this.checkRateLimit();
+    }
+    
+    // Add request to queues and increment counters
+    this.requestQueue.push(now);
+    this.dailyRequests++;
+    this.monthlyRequests++;
+    
+    // Adaptive throttling
+    if (BOT_CONFIG.RPC.RATE_LIMIT.ENABLE_ADAPTIVE_THROTTLING) {
+      const dailyUsagePercent = (this.dailyRequests / this.dailyLimit) * 100;
+      const monthlyUsagePercent = (this.monthlyRequests / this.monthlyLimit) * 100;
+      
+      if (dailyUsagePercent > 90 || monthlyUsagePercent > 90) {
+        await new Promise(resolve => setTimeout(resolve, this.cooldownMs * 2));
+      } else if (dailyUsagePercent > 75 || monthlyUsagePercent > 75) {
+        await new Promise(resolve => setTimeout(resolve, this.cooldownMs));
+      }
+    }
+  }
+
+  getUsageStats() {
+    return {
+      dailyRequests: this.dailyRequests,
+      monthlyRequests: this.monthlyRequests,
+      dailyUsagePercent: (this.dailyRequests / this.dailyLimit) * 100,
+      monthlyUsagePercent: (this.monthlyRequests / this.monthlyLimit) * 100,
+      currentBurst: this.requestQueue.length
+    };
+  }
+}
+
 export class JitoConnection extends Connection {
   private retryCount: number = 0;
   private readonly maxRetries: number = 3;
@@ -39,24 +153,38 @@ export class JitoConnection extends Connection {
 
   private readonly regularConnection: Connection;
   private readonly jitoEndpoint: string;
+  private readonly rateLimiter: RateLimiter;
 
   constructor(jitoEndpoint: string, regularEndpoint: string, commitmentOrConfig?: Commitment | ConnectionConfig) {
     super(regularEndpoint, commitmentOrConfig);
     this.jitoEndpoint = jitoEndpoint;
     this.regularConnection = new Connection(regularEndpoint, commitmentOrConfig);
+    this.rateLimiter = new RateLimiter(
+      BOT_CONFIG.RPC.RATE_LIMIT.MAX_REQUESTS_PER_SECOND,
+      BOT_CONFIG.RPC.RATE_LIMIT.BURST_REQUESTS,
+      BOT_CONFIG.RPC.RATE_LIMIT.COOLDOWN_MS,
+      BOT_CONFIG.RPC.RATE_LIMIT.DAILY_REQUEST_LIMIT,
+      BOT_CONFIG.RPC.RATE_LIMIT.MONTHLY_REQUEST_LIMIT
+    );
     logInfo('Initialized Jito connection', { jitoEndpoint, regularEndpoint });
   }
 
-  // Public method to get the regular connection for Jupiter
   public getRegularConnection(): Connection {
     return this.regularConnection;
   }
 
+  public getRateLimiterStats() {
+    return this.rateLimiter.getUsageStats();
+  }
+
   private async makeJitoRequest<T>(method: string, params: any[]): Promise<T> {
     try {
+      await this.rateLimiter.checkRateLimit();
+
       logInfo(`Making Jito RPC request: ${method}`, { 
         endpoint: this.jitoEndpoint,
-        attempt: this.retryCount + 1 
+        attempt: this.retryCount + 1,
+        rateStats: this.getRateLimiterStats()
       });
 
       const response = await axios.post<JitoResponse<T>>(
@@ -84,7 +212,8 @@ export class JitoConnection extends Connection {
       logWarning(`Jito RPC request failed: ${method}`, {
         endpoint: this.jitoEndpoint,
         attempt: this.retryCount + 1,
-        error: error instanceof Error ? error.message : error
+        error: error instanceof Error ? error.message : error,
+        rateStats: this.getRateLimiterStats()
       });
 
       if (this.retryCount < this.maxRetries) {
@@ -102,6 +231,7 @@ export class JitoConnection extends Connection {
 
   override async getLatestBlockhash(commitmentOrConfig?: Commitment | ConnectionConfig): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
     try {
+      await this.rateLimiter.checkRateLimit();
       return await this.regularConnection.getLatestBlockhash(commitmentOrConfig);
     } catch (error) {
       logError('Failed to get latest blockhash from regular connection, trying Jito endpoint', { error });
@@ -120,9 +250,20 @@ export class JitoConnection extends Connection {
 
   override async getBalance(publicKey: PublicKey, commitmentOrConfig?: Commitment | ConnectionConfig): Promise<number> {
     try {
+      await this.rateLimiter.checkRateLimit();
       return await this.regularConnection.getBalance(publicKey, commitmentOrConfig);
     } catch (error) {
       logError('Failed to get balance', { error, publicKey: publicKey.toString() });
+      throw error;
+    }
+  }
+
+  override async getAccountInfo(publicKey: PublicKey, commitmentOrConfig?: Commitment | ConnectionConfig): Promise<any> {
+    try {
+      await this.rateLimiter.checkRateLimit();
+      return await this.regularConnection.getAccountInfo(publicKey, commitmentOrConfig);
+    } catch (error) {
+      logError('Failed to get account info', { error, publicKey: publicKey.toString() });
       throw error;
     }
   }
@@ -190,6 +331,7 @@ export class JitoConnection extends Connection {
     options?: any
   ): Promise<string> {
     try {
+      await this.rateLimiter.checkRateLimit();
       const transaction = Transaction.from(rawTransaction);
       const serializedTransaction = transaction.serialize().toString('base64');
 
