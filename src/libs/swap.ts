@@ -1,8 +1,9 @@
 import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID, createAssociatedTokenAccountInstruction, getAssociatedTokenAddress } from '@solana/spl-token';
+import { TOKEN_PROGRAM_ID } from '@solana/spl-token-v2';
 import { logInfo, logError } from './logger';
 import { BOT_CONFIG } from '../config/settings';
 import { SwapError } from './errors';
+import { findAssociatedTokenAddress } from './utils';
 
 const RAYDIUM_PROGRAM_ID = new PublicKey('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8');
 const RAYDIUM_POOL_ID = new PublicKey('58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2'); // USDC/SOL pool
@@ -23,37 +24,11 @@ export async function swap(
     });
 
     // Get or create token accounts
-    const fromTokenAccount = await getAssociatedTokenAddress(fromMint, wallet.publicKey);
-    const toTokenAccount = await getAssociatedTokenAddress(toMint, wallet.publicKey);
+    const fromTokenAccount = await findAssociatedTokenAddress(wallet.publicKey, fromMint);
+    const toTokenAccount = await findAssociatedTokenAddress(wallet.publicKey, toMint);
 
     // Create token accounts if they don't exist
     const instructions: TransactionInstruction[] = [];
-    
-    try {
-      await connection.getTokenAccountBalance(fromTokenAccount);
-    } catch {
-      instructions.push(
-        createAssociatedTokenAccountInstruction(
-          wallet.publicKey,
-          fromTokenAccount,
-          wallet.publicKey,
-          fromMint
-        )
-      );
-    }
-
-    try {
-      await connection.getTokenAccountBalance(toTokenAccount);
-    } catch {
-      instructions.push(
-        createAssociatedTokenAccountInstruction(
-          wallet.publicKey,
-          toTokenAccount,
-          wallet.publicKey,
-          toMint
-        )
-      );
-    }
 
     // Add Raydium swap instruction
     const swapInstruction = await createRaydiumSwapInstruction(

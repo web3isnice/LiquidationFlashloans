@@ -1,5 +1,4 @@
 import { Keypair, Connection } from '@solana/web3.js';
-import { Jupiter } from '@jup-ag/core';
 import { calculateRefreshedObligation } from './refreshObligation';
 import { liquidateAndRedeem } from './actions/liquidateAndRedeem';
 import { logError, logInfo, logSuccess, logWarning, metrics } from './logger';
@@ -14,7 +13,6 @@ export async function processObligation(
   obligation: any,
   connection: Connection,
   payer: Keypair,
-  jupiter: Jupiter,
   market: any,
   allReserves: any[],
   tokensOracle: any[]
@@ -99,7 +97,6 @@ export async function processObligation(
           selectedDeposit.symbol,
           market,
           currentObligation,
-          jupiter,
         ),
         {
           retries: BOT_CONFIG.OPERATIONAL.MAX_RETRIES,
@@ -124,7 +121,7 @@ export async function processObligation(
       // If we made a profit, swap excess USDC to SOL
       if (profit > BOT_CONFIG.FINANCIAL.MIN_USDC_BUFFER) {
         logInfo('Swapping profits to SOL', { profit });
-        await swapProfitToSol(connection, payer, jupiter, profit);
+        await swapProfitToSol(connection, payer, profit);
       }
 
       logInfo('Checking post-liquidation obligation state...');

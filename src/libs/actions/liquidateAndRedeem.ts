@@ -1,5 +1,4 @@
 import { Keypair, Connection, PublicKey, Transaction } from '@solana/web3.js';
-import { Jupiter } from '@jup-ag/core';
 import { findAssociatedTokenAddress } from 'libs/utils';
 import { createFlashLoanInstructions } from 'libs/flashLoan';
 import { refreshObligationInstruction, refreshReserveInstruction, LiquidateObligationAndRedeemReserveCollateral } from 'models/instructions';
@@ -14,7 +13,6 @@ export async function liquidateAndRedeem(
   withdrawSymbol: string,
   market: any,
   obligation: any,
-  jupiter: Jupiter,
 ): Promise<{ txHash: string; profit: number }> {
   // Convert borrowAmount to BN if it's a string
   const borrowAmountBN = typeof borrowAmount === 'string' ? new BN(borrowAmount) : borrowAmount;
