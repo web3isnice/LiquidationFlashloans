@@ -34,42 +34,57 @@ export const BOT_CONFIG = {
 
   // Financial Settings
   FINANCIAL: {
-    MIN_USDC_BUFFER: 1, // Keep 1 USDC as buffer
-    MIN_SOL_BALANCE: 0.1 * 1e9, // 0.1 SOL minimum for transaction fees
+    MIN_USDC_BUFFER: 1,
+    MIN_SOL_BALANCE: 0.1 * 1e9,
   },
 
   // Operational Settings
   OPERATIONAL: {
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
-    TRANSACTION_TIMEOUT_MS: 60000, // 1 minute timeout for transactions
-    LIQUIDATION_BATCH_SIZE: 5, // Number of obligations to process in parallel
-    STATS_INTERVAL_MS: 300000, // Log stats every 5 minutes
+    TRANSACTION_TIMEOUT_MS: 60000,
+    LIQUIDATION_BATCH_SIZE: 3, // Reduced to stay within rate limits
+    STATS_INTERVAL_MS: 300000,
   },
 
   // RPC Settings
   RPC: {
-    TIMEOUT_MS: 30000, // 30 seconds
-    BATCH_SIZE: 100,
+    TIMEOUT_MS: 30000,
+    BATCH_SIZE: 50, // Reduced batch size to manage data transfer
+    RATE_LIMIT: {
+      // 10 RPS limit
+      MAX_REQUESTS_PER_SECOND: 8, // Leave some headroom for system operations
+      BURST_REQUESTS: 15, // Small burst allowance
+      COOLDOWN_MS: 2000, // Longer cooldown to ensure we stay under daily limit
+      
+      // Monthly limits
+      MONTHLY_REQUEST_LIMIT: 2000000, // 2M requests per month
+      DAILY_REQUEST_LIMIT: 50000, // 50K requests per day
+      DATA_TRANSFER_LIMIT_GB: 100, // 100GB data transfer limit
+      
+      // Additional safeguards
+      REQUEST_TRACKING_WINDOW_MS: 86400000, // 24 hours in milliseconds
+      ENABLE_ADAPTIVE_THROTTLING: true, // Automatically adjust rates based on usage
+    }
   },
 
   // Health Check Settings
   HEALTH_CHECK: {
-    INTERVAL_MS: 60000, // 1 minute
-    MAX_MEMORY_MB: 1024, // 1GB
+    INTERVAL_MS: 60000,
+    MAX_MEMORY_MB: 1024,
   },
 
   // Error Handling
   ERROR_HANDLING: {
     MAX_CONSECUTIVE_ERRORS: 5,
-    ERROR_COOLDOWN_MS: 5000, // 5 seconds
+    ERROR_COOLDOWN_MS: 5000,
   },
 
   // Logging Settings
   LOGGING: {
-    LOG_FILE_MAX_SIZE: 10 * 1024 * 1024, // 10MB
+    LOG_FILE_MAX_SIZE: 10 * 1024 * 1024,
     LOG_MAX_FILES: 5,
-    STATS_INTERVAL_MS: 300000, // 5 minutes
+    STATS_INTERVAL_MS: 300000,
   },
 
   // Status Messages
