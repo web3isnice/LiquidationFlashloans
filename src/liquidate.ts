@@ -162,7 +162,7 @@ async function runLiquidator() {
 
     const payer = createKeypairFromSecret('keypair');
 
-    // Initial health check
+    // Initial health check using regular Solana RPC
     const isHealthy = await checkHealth(connection, payer);
     if (!isHealthy) {
       throw new Error(ERROR_MESSAGES.HEALTH_CHECK_FAILED);
@@ -170,7 +170,7 @@ async function runLiquidator() {
     
     logInfo('Initializing Jupiter SDK...');
     const jupiter = await Jupiter.load({
-      connection,
+      connection, // Use regular Solana RPC for Jupiter
       cluster: 'mainnet-beta',
       user: payer,
       wrapUnwrapSOL: false,
@@ -193,7 +193,7 @@ async function runLiquidator() {
       logInfo(`Starting epoch ${epoch}`);
       for (const market of markets) {
         try {
-          // Periodic health check
+          // Periodic health check using regular Solana RPC
           const isHealthy = await checkHealth(connection, payer);
           if (!isHealthy) {
             throw new Error(ERROR_MESSAGES.HEALTH_CHECK_FAILED);
@@ -291,3 +291,9 @@ async function runLiquidator() {
     process.exit(1);
   }
 }
+
+// Start the liquidator
+runLiquidator().catch(error => {
+  logError('Unhandled error in liquidator', { error });
+  process.exit(1);
+});

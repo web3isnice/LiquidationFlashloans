@@ -15,14 +15,14 @@ export const JITO_ENDPOINTS = {
 export const DEFAULT_JITO_ENDPOINT = JITO_ENDPOINTS.ny;
 
 // Regular Solana RPC endpoint
-export const SOLANA_RPC_ENDPOINT = 'https://api.mainnet-beta.solana.com';
+export const DEFAULT_SOLANA_RPC = 'https://api.mainnet-beta.solana.com';
 
 // Bot Configuration
 export const BOT_CONFIG = {
   // Environment
   ENV: process.env.APP || 'production',
   JITO_ENDPOINT: process.env.JITO_ENDPOINT || DEFAULT_JITO_ENDPOINT,
-  SOLANA_RPC_ENDPOINT: process.env.SOLANA_RPC_ENDPOINT || SOLANA_RPC_ENDPOINT,
+  SOLANA_RPC_ENDPOINT: process.env.SOLANA_RPC_ENDPOINT || DEFAULT_SOLANA_RPC,
   SECRET_PATH: process.env.SECRET_PATH,
   THROTTLE: process.env.THROTTLE ? Number(process.env.THROTTLE) : undefined,
 
