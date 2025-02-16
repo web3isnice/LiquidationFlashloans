@@ -1,6 +1,6 @@
 # Solend Liquidator Bot
 
-A liquidation bot for the Solend protocol on Solana, featuring MEV protection through Jito integration.
+A high-performance liquidation bot for the Solend protocol on Solana, featuring MEV protection through Jito integration.
 
 ## System Setup
 
@@ -37,7 +37,7 @@ npm install --legacy-peer-deps
 touch keypair.json
 
 # Add your private key in JSON array format
-# Example format: [1,2,3,...,64] (32 or 64 bytes)
+# Example format: [1,2,3,...,32] (32 bytes)
 ```
 
 ### Create .env file:
@@ -110,14 +110,52 @@ npm start
 - Jito requires a minimum tip of 1000 lamports for bundles
 - Available Jito regions: Amsterdam, Frankfurt, New York (default), Tokyo, Salt Lake City
 
-## MEV Protection
+## Key Features and Benefits
 
-This bot integrates with Jito for MEV protection on liquidation transactions:
+### 1. Zero Loss Architecture
+- **Flash Loan Integration**: Uses flash loans for risk-free liquidations
+- **Atomic Transactions**: All operations (borrow, liquidate, repay) happen in a single atomic transaction
+- **Pre-Flight Checks**: Simulates transactions before execution to prevent losses
+- **Fail-Safe Mechanisms**: Transactions automatically revert if profitable execution cannot be guaranteed
 
-- All liquidation transactions are sent through Jito's Block Engine
-- Transactions include required tips for bundle inclusion
-- Bundle support for atomic execution of related transactions
-- Protection against frontrunning and sandwich attacks
+### 2. MEV Protection
+- **Jito Integration**: All liquidation transactions protected against MEV
+- **Bundle Transactions**: Groups related operations into atomic bundles
+- **Frontrunning Prevention**: Protected against sandwich attacks and frontrunning
+- **Priority Queue**: Transactions get priority treatment in block inclusion
+
+### 3. High Performance
+- **Parallel Processing**: Handles multiple obligations simultaneously
+- **Optimized Market Scanning**: Efficient market monitoring with minimal RPC calls
+- **Smart Batching**: Groups operations to minimize transaction fees
+- **Dual RPC Strategy**: Uses specialized RPCs for different operations
+  - Jito RPC for MEV-protected transactions
+  - Regular RPC for market monitoring and balance checks
+
+### 4. Risk Management
+- **Health Monitoring**: Continuous system health checks
+- **Balance Management**: Maintains optimal token balances
+- **Error Recovery**: Automatic recovery from common errors
+- **Circuit Breakers**: Stops operations if unusual conditions detected
+
+### 5. Advanced Features
+- **Multi-Market Support**: Monitors all Solend markets simultaneously
+- **Profit Optimization**: Selects most profitable liquidation opportunities
+- **Auto Token Unwrapping**: Automatically unwraps wrapped tokens
+- **Smart Routing**: Uses Jupiter for optimal token swaps
+- **Position Sizing**: Calculates optimal liquidation amounts
+
+### 6. Reliability Features
+- **Automatic Retries**: Exponential backoff for failed operations
+- **Connection Redundancy**: Multiple RPC endpoints for reliability
+- **Error Handling**: Comprehensive error capture and recovery
+- **Transaction Monitoring**: Tracks all transaction stages
+
+### 7. Monitoring and Analytics
+- **Performance Metrics**: Tracks success rates and profits
+- **Health Statistics**: Monitors system resource usage
+- **Transaction Logs**: Detailed logging of all operations
+- **Alert System**: Notifications for important events
 
 ## Process Management (Optional)
 
