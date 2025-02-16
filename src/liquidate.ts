@@ -1,5 +1,6 @@
 import {
   Keypair,
+  Connection,
   PublicKey,
 } from '@solana/web3.js';
 import dotenv from 'dotenv';
@@ -37,8 +38,10 @@ dotenv.config();
 
 async function checkInitialSetup() {
   try {
+    logInfo('Starting initial setup check...');
     // This will throw if the keypair is invalid
     const payer = createKeypairFromSecret('keypair');
+    logInfo('Keypair loaded successfully', { publicKey: payer.publicKey.toString() });
     
     // Validate environment variables
     if (!BOT_CONFIG.ENV) {
@@ -47,6 +50,7 @@ async function checkInitialSetup() {
     if (!['production', 'devnet'].includes(BOT_CONFIG.ENV)) {
       throw new ConfigurationError('APP must be either "production" or "devnet"');
     }
+    logSuccess('Initial setup check passed');
   } catch (error) {
     if (error instanceof Error) {
       throw new ConfigurationError(`Failed to read or parse keypair file: ${error.message}`);
@@ -55,13 +59,46 @@ async function checkInitialSetup() {
   }
 }
 
-async function checkHealth(connection: JitoConnection, payer: Keypair) {
+async function checkHealth(connection: Connection, payer: Keypair) {
   try {
-    // Check SOL balance
-    const solBalance = await connection.getBalance(payer.publicKey);
+    logInfo('Starting health check...');
+    
+    // Get latest blockhash first to verify RPC connection
+    logInfo('Checking RPC connection...');
+    const { blockhash } = await connection.getLatestBlockhash()
+      .catch((error) => {
+        throw new RpcError(`${ERROR_MESSAGES.RPC_ERROR}: ${error.message}`);
+      });
+
+    if (!blockhash) {
+      throw new RpcError('Failed to get latest blockhash');
+    }
+    logInfo('RPC connection verified');
+
+    // Check SOL balance with retry
+    let retryCount = 0;
+    const maxRetries = 3;
+    let solBalance;
+
+    logInfo('Checking SOL balance...');
+    while (retryCount < maxRetries) {
+      try {
+        solBalance = await connection.getBalance(payer.publicKey, 'confirmed');
+        break;
+      } catch (error) {
+        retryCount++;
+        logWarning(`Failed to get balance (attempt ${retryCount}/${maxRetries})`, { error });
+        if (retryCount === maxRetries) {
+          throw new RpcError(`Failed to get balance after ${maxRetries} attempts: ${error.message}`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000 * retryCount)); // Exponential backoff
+      }
+    }
+
     if (solBalance < BOT_CONFIG.FINANCIAL.MIN_SOL_BALANCE) {
       throw new InsufficientFundsError(ERROR_MESSAGES.INSUFFICIENT_SOL);
     }
+    logInfo('SOL balance check passed', { balance: solBalance / 1e9 });
 
     // Check memory usage
     const memoryUsage = process.memoryUsage();
@@ -72,17 +109,7 @@ async function checkHealth(connection: JitoConnection, payer: Keypair) {
       });
     }
 
-    // Check RPC connection by getting latest blockhash
-    const { blockhash } = await connection.getLatestBlockhash()
-      .catch((error) => {
-        throw new RpcError(`${ERROR_MESSAGES.RPC_ERROR}: ${error.message}`);
-      });
-
-    if (!blockhash) {
-      throw new RpcError('Failed to get latest blockhash');
-    }
-
-    logInfo('Health check passed', {
+    logSuccess('Health check passed', {
       solBalance: solBalance / 1e9,
       memoryUsage: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`,
       endpoint: connection.rpcEndpoint
@@ -103,16 +130,28 @@ async function checkHealth(connection: JitoConnection, payer: Keypair) {
 
 async function runLiquidator() {
   try {
+    logInfo('Starting liquidator bot...');
+    
     // Initial setup validation
     await checkInitialSetup();
 
+    logInfo('Fetching markets...');
     const markets = await getMarkets();
     if (!markets || markets.length === 0) {
       throw new ConfigurationError(ERROR_MESSAGES.NO_MARKETS);
     }
+    logInfo(`Found ${markets.length} markets`);
 
-    // Create Jito connection
-    const connection = new JitoConnection(BOT_CONFIG.JITO_ENDPOINT, {
+    // Create regular Solana connection for standard RPC operations
+    logInfo('Connecting to Solana RPC...', { endpoint: BOT_CONFIG.SOLANA_RPC_ENDPOINT });
+    const connection = new Connection(BOT_CONFIG.SOLANA_RPC_ENDPOINT, {
+      commitment: 'confirmed',
+      confirmTransactionInitialTimeout: BOT_CONFIG.OPERATIONAL.TRANSACTION_TIMEOUT_MS
+    });
+
+    // Create Jito connection for transactions and bundles
+    logInfo('Connecting to Jito RPC...', { endpoint: BOT_CONFIG.JITO_ENDPOINT });
+    const jitoConnection = new JitoConnection(BOT_CONFIG.JITO_ENDPOINT, {
       commitment: 'confirmed',
       confirmTransactionInitialTimeout: BOT_CONFIG.OPERATIONAL.TRANSACTION_TIMEOUT_MS
     });
@@ -129,6 +168,7 @@ async function runLiquidator() {
       throw new Error(ERROR_MESSAGES.HEALTH_CHECK_FAILED);
     }
     
+    logInfo('Initializing Jupiter SDK...');
     const jupiter = await Jupiter.load({
       connection,
       cluster: 'mainnet-beta',
@@ -136,17 +176,21 @@ async function runLiquidator() {
       wrapUnwrapSOL: false,
     });
 
-    logInfo(SUCCESS_MESSAGES.STARTUP, {
+    logSuccess(SUCCESS_MESSAGES.STARTUP, {
       environment: BOT_CONFIG.ENV,
       jitoEndpoint: BOT_CONFIG.JITO_ENDPOINT,
+      solanaEndpoint: BOT_CONFIG.SOLANA_RPC_ENDPOINT,
       wallet: payer.publicKey.toBase58(),
       marketCount: markets.length,
       solBalance: await connection.getBalance(payer.publicKey) / 1e9
     });
 
     let consecutiveErrors = 0;
+    let epoch = 0;
 
-    for (let epoch = 0; ; epoch += 1) {
+    logInfo('Starting main liquidation loop...');
+    while (true) {
+      logInfo(`Starting epoch ${epoch}`);
       for (const market of markets) {
         try {
           // Periodic health check
@@ -155,6 +199,7 @@ async function runLiquidator() {
             throw new Error(ERROR_MESSAGES.HEALTH_CHECK_FAILED);
           }
 
+          logInfo(`Fetching data for market ${market.name}...`);
           const tokensOracle = await getTokensOracleData(connection, market);
           if (!tokensOracle || tokensOracle.length === 0) {
             throw new Error('Failed to fetch token oracle data');
@@ -171,6 +216,7 @@ async function runLiquidator() {
           }
 
           logInfo('Processing market', {
+            marketName: market.name,
             marketAddress: market.address,
             obligationCount: allObligations.length,
             reserveCount: allReserves.length
@@ -178,11 +224,13 @@ async function runLiquidator() {
 
           for (let i = 0; i < allObligations.length; i += BOT_CONFIG.OPERATIONAL.LIQUIDATION_BATCH_SIZE) {
             const batch = allObligations.slice(i, i + BOT_CONFIG.OPERATIONAL.LIQUIDATION_BATCH_SIZE);
+            logInfo(`Processing batch ${Math.floor(i/BOT_CONFIG.OPERATIONAL.LIQUIDATION_BATCH_SIZE) + 1}/${Math.ceil(allObligations.length/BOT_CONFIG.OPERATIONAL.LIQUIDATION_BATCH_SIZE)}`);
+            
             await Promise.all(
               batch.map(obligation => 
                 processObligation(
                   obligation,
-                  connection,
+                  jitoConnection, // Use Jito connection for transactions
                   payer,
                   jupiter,
                   market,
@@ -199,10 +247,12 @@ async function runLiquidator() {
             );
           }
 
+          logInfo('Unwrapping tokens...');
           await unwrapTokens(connection, payer);
           consecutiveErrors = 0;
 
           if (BOT_CONFIG.THROTTLE) {
+            logInfo(`Throttling for ${BOT_CONFIG.THROTTLE}ms before next market`);
             await new Promise(resolve => setTimeout(resolve, BOT_CONFIG.THROTTLE));
           }
 
@@ -220,12 +270,14 @@ async function runLiquidator() {
           });
 
           if (consecutiveErrors >= BOT_CONFIG.ERROR_HANDLING.MAX_CONSECUTIVE_ERRORS) {
-            logError('Too many consecutive errors, waiting before retry');
+            logWarning(`Too many consecutive errors (${consecutiveErrors}), cooling down...`);
             await new Promise(resolve => setTimeout(resolve, BOT_CONFIG.ERROR_HANDLING.ERROR_COOLDOWN_MS));
             consecutiveErrors = 0;
           }
         }
       }
+      epoch++;
+      logInfo(`Completed epoch ${epoch}`);
     }
   } catch (error) {
     logError('Fatal error in liquidator', { 
@@ -239,5 +291,3 @@ async function runLiquidator() {
     process.exit(1);
   }
 }
-
-runLiquidator();

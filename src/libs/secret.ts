@@ -22,22 +22,21 @@ function normalizeKeypair(input: string | number[]): Uint8Array {
     try {
       const parsed = JSON.parse(input);
       if (isValidByteArray(parsed)) {
-        // For 64-byte arrays, first 32 bytes are public key, last 32 are private key
-        return new Uint8Array(parsed.length === 64 ? parsed.slice(32) : parsed);
+        // Use the full array for 64-byte keypairs
+        return new Uint8Array(parsed);
       }
     } catch {
       // If JSON parsing fails, try base58
       if (isValidBase58(input.trim())) {
         const decoded = bs58.decode(input.trim());
-        // For 64-byte decoded base58, first 32 bytes are public key, last 32 are private key
-        return new Uint8Array(decoded.length === 64 ? decoded.slice(32) : decoded);
+        return new Uint8Array(decoded);
       }
     }
   } 
   // If input is already an array
   else if (isValidByteArray(input)) {
-    // For 64-byte arrays, first 32 bytes are public key, last 32 are private key
-    return new Uint8Array(input.length === 64 ? input.slice(32) : input);
+    // Use the full array for 64-byte keypairs
+    return new Uint8Array(input);
   }
 
   throw new Error('bad secret key size');

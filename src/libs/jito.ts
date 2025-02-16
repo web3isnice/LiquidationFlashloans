@@ -1,6 +1,7 @@
 import axios from 'axios';
-import { Transaction, Connection, Commitment, ConnectionConfig } from '@solana/web3.js';
+import { Transaction, Connection, Commitment, ConnectionConfig, PublicKey, GetBalanceConfig } from '@solana/web3.js';
 import { BOT_CONFIG } from '../config/settings';
+import { logError, logInfo, logWarning } from './logger';
 
 interface JitoResponse<T> {
   jsonrpc: string;
@@ -38,12 +39,22 @@ export class JitoConnection extends Connection {
 
   constructor(endpoint: string, commitmentOrConfig?: Commitment | ConnectionConfig) {
     super(endpoint, commitmentOrConfig);
+    logInfo('Initializing Jito connection', { endpoint });
   }
 
-  private async makeJitoRequest<T>(method: string, params: any[]): Promise<T> {
+  private async makeJitoRequest<T>(method: string, params: any[], isTransactionMethod: boolean = false): Promise<T> {
     try {
+      logInfo(`Making Jito RPC request: ${method}`, { 
+        endpoint: this.rpcEndpoint,
+        attempt: this.retryCount + 1 
+      });
+      
+      const endpoint = isTransactionMethod 
+        ? `${this.rpcEndpoint}/api/v1/transactions`
+        : this.rpcEndpoint;
+
       const response = await axios.post<JitoResponse<T>>(
-        this.rpcEndpoint,
+        endpoint,
         {
           jsonrpc: '2.0',
           id: 1,
@@ -62,16 +73,68 @@ export class JitoConnection extends Connection {
         throw new Error(`Jito error: ${JSON.stringify(response.data.error)}`);
       }
 
+      logInfo(`Jito RPC request successful: ${method}`);
       return response.data.result as T;
     } catch (error) {
+      logWarning(`Jito RPC request failed: ${method}`, {
+        endpoint: this.rpcEndpoint,
+        attempt: this.retryCount + 1,
+        error: error instanceof Error ? error.message : error
+      });
+
       if (this.retryCount < this.maxRetries) {
         this.retryCount++;
-        await new Promise(resolve => setTimeout(resolve, BOT_CONFIG.OPERATIONAL.RETRY_DELAY_MS));
-        return this.makeJitoRequest(method, params);
+        const delay = BOT_CONFIG.OPERATIONAL.RETRY_DELAY_MS * Math.pow(2, this.retryCount - 1);
+        logInfo(`Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return this.makeJitoRequest(method, params, isTransactionMethod);
       }
+
+      logError(`Jito RPC request failed after ${this.maxRetries} attempts: ${method}`);
       throw error;
     } finally {
-      this.retryCount = 0;
+      if (this.retryCount >= this.maxRetries) {
+        this.retryCount = 0;
+      }
+    }
+  }
+
+  override async getLatestBlockhash(commitmentOrConfig?: Commitment | ConnectionConfig): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
+    try {
+      logInfo('Getting latest blockhash...');
+      const result = await this.makeJitoRequest<{
+        blockhash: string;
+        lastValidBlockHeight: number;
+      }>('getLatestBlockhash', [{ commitment: commitmentOrConfig || this.commitment }]);
+
+      if (!result || !result.blockhash) {
+        throw new Error('Invalid response from getLatestBlockhash');
+      }
+
+      logInfo('Successfully retrieved latest blockhash');
+      return {
+        blockhash: result.blockhash,
+        lastValidBlockHeight: result.lastValidBlockHeight + 150 // Add ~1 minute buffer
+      };
+    } catch (error) {
+      logError('Failed to get latest blockhash', { error });
+      throw error;
+    }
+  }
+
+  override async getBalance(publicKey: PublicKey, commitmentOrConfig?: Commitment | GetBalanceConfig): Promise<number> {
+    try {
+      logInfo('Getting account balance...', { publicKey: publicKey.toString() });
+      const result = await this.makeJitoRequest<number>(
+        'getBalance',
+        [publicKey.toString(), { commitment: (typeof commitmentOrConfig === 'string' ? commitmentOrConfig : commitmentOrConfig?.commitment) || this.commitment }]
+      );
+      
+      logInfo('Successfully retrieved balance', { publicKey: publicKey.toString(), balance: result });
+      return result;
+    } catch (error) {
+      logError('Failed to get balance', { error, publicKey: publicKey.toString() });
+      throw error;
     }
   }
 
@@ -84,10 +147,11 @@ export class JitoConnection extends Connection {
       tx.serialize().toString('base64')
     );
 
-    const result = await this.makeJitoRequest<BundleResult>('sendBundle', [
-      encodedTransactions,
-      { encoding: 'base64' }
-    ]);
+    const result = await this.makeJitoRequest<BundleResult>(
+      'sendBundle',
+      [encodedTransactions, { encoding: 'base64' }],
+      true // Use transactions endpoint
+    );
 
     return result.bundle_id;
   }
@@ -141,45 +205,24 @@ export class JitoConnection extends Connection {
       const transaction = Transaction.from(rawTransaction);
       const serializedTransaction = transaction.serialize().toString('base64');
 
-      return await this.makeJitoRequest<string>('sendTransaction', [
-        serializedTransaction,
-        {
-          encoding: 'base64',
-          minContextSlot: options?.minContextSlot,
-          maxRetries: 0,
-          skipPreflight: true
-        }
-      ]);
+      return await this.makeJitoRequest<string>(
+        'sendTransaction',
+        [
+          serializedTransaction,
+          {
+            encoding: 'base64',
+            minContextSlot: options?.minContextSlot,
+            maxRetries: 0,
+            skipPreflight: true
+          }
+        ],
+        true // Use transactions endpoint
+      );
     } catch (error) {
       if (this.retryCount < this.maxRetries) {
         this.retryCount++;
         await new Promise(resolve => setTimeout(resolve, BOT_CONFIG.OPERATIONAL.RETRY_DELAY_MS));
         return this.sendRawTransaction(rawTransaction, options);
-      }
-      throw error;
-    }
-  }
-
-  override async getLatestBlockhash(commitmentOrConfig?: Commitment | ConnectionConfig): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
-    try {
-      const result = await this.makeJitoRequest<{
-        blockhash: string;
-        lastValidBlockHeight: number;
-      }>('getLatestBlockhash', [{ commitment: commitmentOrConfig || this.commitment }]);
-
-      if (!result || !result.blockhash) {
-        throw new Error('Invalid response from getLatestBlockhash');
-      }
-
-      return {
-        blockhash: result.blockhash,
-        lastValidBlockHeight: result.lastValidBlockHeight + 150 // Add ~1 minute buffer
-      };
-    } catch (error) {
-      if (this.retryCount < this.maxRetries) {
-        this.retryCount++;
-        await new Promise(resolve => setTimeout(resolve, BOT_CONFIG.OPERATIONAL.RETRY_DELAY_MS));
-        return this.getLatestBlockhash(commitmentOrConfig);
       }
       throw error;
     }

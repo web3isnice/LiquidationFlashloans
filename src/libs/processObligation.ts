@@ -20,24 +20,49 @@ export async function processObligation(
   tokensOracle: any[]
 ) {
   try {
+    logInfo('Processing obligation', {
+      obligationId: obligation.pubkey.toString(),
+      market: market.name
+    });
+
     let currentObligation = obligation;
     
     while (currentObligation) {
+      logInfo('Calculating obligation health...');
       const {
         borrowedValue,
         unhealthyBorrowValue,
         deposits,
         borrows,
+        utilizationRatio
       } = calculateRefreshedObligation(
         currentObligation.info,
         allReserves,
         tokensOracle,
       );
 
+      logInfo('Obligation status', {
+        borrowedValue: borrowedValue.toString(),
+        unhealthyBorrowValue: unhealthyBorrowValue.toString(),
+        utilizationRatio: `${utilizationRatio.toFixed(2)}%`,
+        depositsCount: deposits.length,
+        borrowsCount: borrows.length
+      });
+
       // Skip if obligation is healthy
       if (borrowedValue.isLessThanOrEqualTo(unhealthyBorrowValue)) {
+        logInfo('Obligation is healthy, skipping', {
+          obligationId: currentObligation.pubkey.toString()
+        });
         break;
       }
+
+      logInfo('Found unhealthy obligation!', {
+        obligationId: currentObligation.pubkey.toString(),
+        borrowedValue: borrowedValue.toString(),
+        unhealthyBorrowValue: unhealthyBorrowValue.toString(),
+        utilizationRatio: `${utilizationRatio.toFixed(2)}%`
+      });
 
       // Select repay token with highest market value
       const selectedBorrow = borrows[0];
@@ -57,15 +82,14 @@ export async function processObligation(
         break;
       }
 
-      logInfo('Found underwater obligation', {
-        obligationId: currentObligation.pubkey.toString(),
-        borrowedValue: borrowedValue.toString(),
-        unhealthyBorrowValue: unhealthyBorrowValue.toString(),
-        market: market.address,
-        selectedBorrow: selectedBorrow.symbol,
-        selectedDeposit: selectedDeposit.symbol
+      logInfo('Selected tokens for liquidation', {
+        borrowToken: selectedBorrow.symbol,
+        borrowAmount: selectedBorrow.borrowAmountWads.toString(),
+        depositToken: selectedDeposit.symbol,
+        depositValue: selectedDeposit.marketValue.toString()
       });
 
+      logInfo('Attempting liquidation...');
       const { txHash, profit } = await pRetry(
         () => liquidateAndRedeem(
           connection,
@@ -92,14 +116,18 @@ export async function processObligation(
       logSuccess(SUCCESS_MESSAGES.LIQUIDATION_SUCCESS, {
         txHash,
         profit,
-        obligationId: currentObligation.pubkey.toString()
+        obligationId: currentObligation.pubkey.toString(),
+        borrowToken: selectedBorrow.symbol,
+        depositToken: selectedDeposit.symbol
       });
 
       // If we made a profit, swap excess USDC to SOL
       if (profit > BOT_CONFIG.FINANCIAL.MIN_USDC_BUFFER) {
+        logInfo('Swapping profits to SOL', { profit });
         await swapProfitToSol(connection, payer, jupiter, profit);
       }
 
+      logInfo('Checking post-liquidation obligation state...');
       const postLiquidationObligation = await connection.getAccountInfo(
         currentObligation.pubkey,
       );
@@ -115,6 +143,7 @@ export async function processObligation(
         break;
       }
       currentObligation = parsedObligation;
+      logInfo('Updated obligation state fetched successfully');
     }
   } catch (error) {
     metrics.incrementFailedLiquidations();
