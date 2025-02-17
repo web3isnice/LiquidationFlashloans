@@ -40,52 +40,33 @@ export const BOT_CONFIG = {
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
     TRANSACTION_TIMEOUT_MS: 60000,
-    LIQUIDATION_BATCH_SIZE: 2, // Process obligations in smaller batches
+    LIQUIDATION_BATCH_SIZE: 5,
     STATS_INTERVAL_MS: 300000,
     MARKET_PROCESSING_DELAY_MS: 2000, // Delay between processing markets
+    OBLIGATION_PROCESSING_DELAY_MS: 500, // Delay between processing obligations
   },
 
   // RPC Settings
   RPC: {
     TIMEOUT_MS: 30000,
-    BATCH_SIZE: 25, // Reduced batch size
-    RATE_LIMIT: {
-      // RPS settings
-      MAX_REQUESTS_PER_SECOND: 5, // Maximum requests per second
-      BURST_REQUESTS: 8, // Maximum burst requests
-      COOLDOWN_MS: 5000, // Cooldown period after hitting limits
-      
-      // Monthly limits
-      MONTHLY_REQUEST_LIMIT: 2000000, // 2M requests per month
-      DAILY_REQUEST_LIMIT: 50000, // 50K requests per day
-      DATA_TRANSFER_LIMIT_GB: 100, // 100GB data transfer limit
-      
-      // Additional safeguards
-      REQUEST_TRACKING_WINDOW_MS: 86400000, // 24 hours
-      ENABLE_ADAPTIVE_THROTTLING: true,
-      
-      // Queue settings
-      QUEUE_SIZE: 100,
-      QUEUE_TIMEOUT_MS: 30000,
-      
-      // Backoff settings
-      MIN_BACKOFF_MS: 1000 as const,
-      MAX_BACKOFF_MS: 60000 as const,
-      BACKOFF_MULTIPLIER: 1.5,
-      
-      // Circuit breaker
-      ERROR_THRESHOLD: 0.1, // 10% error rate threshold
-      CIRCUIT_BREAKER_TIMEOUT_MS: 300000, // 5 minutes
-    }
+    BATCH_SIZE: 100,
   },
 
   // Price Feed Settings
   PRICE_FEEDS: {
-    CACHE_TTL_MS: 10000, // Cache price feed data for 10 seconds
+    CACHE_TTL_MS: 10000, // 10 seconds cache TTL
+    STALE_PRICE_THRESHOLD_MS: 60000, // 1 minute stale threshold
     RETRY_ATTEMPTS: 3,
     RETRY_DELAY_MS: 1000,
-    FALLBACK_TO_SERUM: true, // Use Serum DEX as fallback price source
-    STALE_PRICE_THRESHOLD_MS: 300000, // 5 minutes
+    FALLBACK_PRICES: {
+      // Add known stable prices for certain tokens
+      'USDC': 1,
+      'USDT': 1,
+      'UST': 1,
+      'DAI': 1,
+      'BUSD': 1,
+    },
+    REQUIRED_CONFIDENCE_BPS: 100, // 1% max price confidence interval
   },
 
   // Health Check Settings

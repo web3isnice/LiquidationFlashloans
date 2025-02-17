@@ -23,155 +23,21 @@ interface BundleStatus {
   landed_slot: number | null;
 }
 
-class RateLimiter {
+// Rate limiter only for regular RPC
+class RegularRpcRateLimiter {
   private requestQueue: number[] = [];
-  private dailyRequests: number = 0;
-  private monthlyRequests: number = 0;
-  private lastReset = {
-    daily: Date.now(),
-    monthly: Date.now()
-  };
-  private backoffDelay = BOT_CONFIG.RPC.RATE_LIMIT.MIN_BACKOFF_MS;
-  private errorCount = 0;
-  private totalRequests = 0;
-  private circuitOpen = false;
-  private lastCircuitBreak = 0;
-
-  constructor() {
-    // Reset counters periodically
-    setInterval(() => this.resetCounters(), 60000); // Check every minute
-  }
-
-  private resetCounters() {
-    const now = Date.now();
-    
-    // Reset daily counter
-    if (now - this.lastReset.daily >= 86400000) {
-      this.dailyRequests = 0;
-      this.lastReset.daily = now;
-      this.errorCount = 0;
-      this.totalRequests = 0;
-    }
-    
-    // Reset monthly counter
-    if (now - this.lastReset.monthly >= 2592000000) {
-      this.monthlyRequests = 0;
-      this.lastReset.monthly = now;
-    }
-
-    // Clean up old requests from queue
-    const oneSecondAgo = now - 1000;
-    this.requestQueue = this.requestQueue.filter(timestamp => timestamp > oneSecondAgo);
-  }
-
-  private async handleRateLimit(type: 'burst' | 'daily' | 'monthly'): Promise<void> {
-    const delays = {
-      burst: this.backoffDelay,
-      daily: Math.max(60000, this.backoffDelay), // At least 1 minute
-      monthly: Math.max(300000, this.backoffDelay) // At least 5 minutes
-    };
-
-    logWarning(`${type} rate limit reached, backing off for ${delays[type]}ms`);
-    await new Promise(resolve => setTimeout(resolve, delays[type]));
-    
-    // Increase backoff delay up to max
-    const newBackoff = Math.min(
-      this.backoffDelay * BOT_CONFIG.RPC.RATE_LIMIT.BACKOFF_MULTIPLIER,
-      BOT_CONFIG.RPC.RATE_LIMIT.MAX_BACKOFF_MS
-    );
-    
-    // Ensure backoff stays within MIN_BACKOFF_MS
-    this.backoffDelay = Math.max(newBackoff, BOT_CONFIG.RPC.RATE_LIMIT.MIN_BACKOFF_MS);
-  }
-
-  private checkCircuitBreaker() {
-    if (this.totalRequests < 100) return false; // Need minimum sample size
-    
-    const errorRate = this.errorCount / this.totalRequests;
-    if (errorRate > BOT_CONFIG.RPC.RATE_LIMIT.ERROR_THRESHOLD) {
-      this.circuitOpen = true;
-      this.lastCircuitBreak = Date.now();
-      logWarning(`Circuit breaker triggered - Error rate: ${(errorRate * 100).toFixed(2)}%`);
-      return true;
-    }
-    return false;
-  }
-
-  public recordError() {
-    this.errorCount++;
-    this.checkCircuitBreaker();
-  }
+  private readonly maxRequestsPerSecond = 250;
 
   public async checkRateLimit(): Promise<void> {
-    // Check circuit breaker
-    if (this.circuitOpen) {
-      const now = Date.now();
-      if (now - this.lastCircuitBreak >= BOT_CONFIG.RPC.RATE_LIMIT.CIRCUIT_BREAKER_TIMEOUT_MS) {
-        this.circuitOpen = false;
-        this.errorCount = 0;
-        this.totalRequests = 0;
-      } else {
-        throw new Error('Circuit breaker is open');
-      }
-    }
-
-    this.resetCounters();
     const now = Date.now();
-    
-    // Check monthly limit
-    if (this.monthlyRequests >= BOT_CONFIG.RPC.RATE_LIMIT.MONTHLY_REQUEST_LIMIT) {
-      await this.handleRateLimit('monthly');
-      return this.checkRateLimit();
-    }
-    
-    // Check daily limit
-    if (this.dailyRequests >= BOT_CONFIG.RPC.RATE_LIMIT.DAILY_REQUEST_LIMIT) {
-      await this.handleRateLimit('daily');
-      return this.checkRateLimit();
-    }
-    
-    // Remove requests older than 1 second
     this.requestQueue = this.requestQueue.filter(timestamp => now - timestamp < 1000);
     
-    // Check burst limit
-    if (this.requestQueue.length >= BOT_CONFIG.RPC.RATE_LIMIT.BURST_REQUESTS) {
-      await this.handleRateLimit('burst');
+    if (this.requestQueue.length >= this.maxRequestsPerSecond) {
+      await new Promise(resolve => setTimeout(resolve, 50)); // Small delay if we hit the limit
       return this.checkRateLimit();
     }
     
-    // Add request to queue and increment counters
     this.requestQueue.push(now);
-    this.dailyRequests++;
-    this.monthlyRequests++;
-    this.totalRequests++;
-    
-    // Adaptive throttling
-    if (BOT_CONFIG.RPC.RATE_LIMIT.ENABLE_ADAPTIVE_THROTTLING) {
-      const dailyUsagePercent = (this.dailyRequests / BOT_CONFIG.RPC.RATE_LIMIT.DAILY_REQUEST_LIMIT) * 100;
-      const monthlyUsagePercent = (this.monthlyRequests / BOT_CONFIG.RPC.RATE_LIMIT.MONTHLY_REQUEST_LIMIT) * 100;
-      
-      if (dailyUsagePercent > 90 || monthlyUsagePercent > 90) {
-        await new Promise(resolve => setTimeout(resolve, this.backoffDelay * 2));
-      } else if (dailyUsagePercent > 75 || monthlyUsagePercent > 75) {
-        await new Promise(resolve => setTimeout(resolve, this.backoffDelay));
-      }
-    }
-
-    // Reset backoff if we've made it this far
-    this.backoffDelay = BOT_CONFIG.RPC.RATE_LIMIT.MIN_BACKOFF_MS;
-  }
-
-  public getStats() {
-    return {
-      dailyRequests: this.dailyRequests,
-      monthlyRequests: this.monthlyRequests,
-      dailyUsagePercent: (this.dailyRequests / BOT_CONFIG.RPC.RATE_LIMIT.DAILY_REQUEST_LIMIT) * 100,
-      monthlyUsagePercent: (this.monthlyRequests / BOT_CONFIG.RPC.RATE_LIMIT.MONTHLY_REQUEST_LIMIT) * 100,
-      currentBurst: this.requestQueue.length,
-      errorRate: this.totalRequests ? (this.errorCount / this.totalRequests) * 100 : 0,
-      circuitBreakerStatus: this.circuitOpen ? 'OPEN' : 'CLOSED',
-      currentBackoffDelay: this.backoffDelay
-    };
   }
 }
 
@@ -191,13 +57,13 @@ export class JitoConnection extends Connection {
 
   private readonly regularConnection: Connection;
   private readonly jitoEndpoint: string;
-  private readonly rateLimiter: RateLimiter;
+  private readonly regularRpcLimiter: RegularRpcRateLimiter;
 
   constructor(jitoEndpoint: string, regularEndpoint: string, commitmentOrConfig?: Commitment | ConnectionConfig) {
     super(regularEndpoint, commitmentOrConfig);
     this.jitoEndpoint = jitoEndpoint;
     this.regularConnection = new Connection(regularEndpoint, commitmentOrConfig);
-    this.rateLimiter = new RateLimiter();
+    this.regularRpcLimiter = new RegularRpcRateLimiter();
     logInfo('Initialized Jito connection', { jitoEndpoint, regularEndpoint });
   }
 
@@ -205,18 +71,11 @@ export class JitoConnection extends Connection {
     return this.regularConnection;
   }
 
-  public getRateLimiterStats() {
-    return this.rateLimiter.getStats();
-  }
-
   private async makeJitoRequest<T>(method: string, params: any[]): Promise<T> {
     try {
-      await this.rateLimiter.checkRateLimit();
-
       logInfo(`Making Jito RPC request: ${method}`, { 
         endpoint: this.jitoEndpoint,
-        attempt: this.retryCount + 1,
-        rateStats: this.getRateLimiterStats()
+        attempt: this.retryCount + 1
       });
 
       const response = await axios.post<JitoResponse<T>>(
@@ -236,25 +95,20 @@ export class JitoConnection extends Connection {
       );
 
       if (response.data.error) {
-        this.rateLimiter.recordError();
         throw new Error(`Jito error: ${JSON.stringify(response.data.error)}`);
       }
 
       return response.data.result as T;
     } catch (error) {
-      this.rateLimiter.recordError();
-      
       logWarning(`Jito RPC request failed: ${method}`, {
         endpoint: this.jitoEndpoint,
         attempt: this.retryCount + 1,
-        error: error instanceof Error ? error.message : error,
-        rateStats: this.getRateLimiterStats()
+        error: error instanceof Error ? error.message : error
       });
 
       if (this.retryCount < this.maxRetries) {
         this.retryCount++;
-        const delay = BOT_CONFIG.OPERATIONAL.RETRY_DELAY_MS * Math.pow(2, this.retryCount - 1);
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await new Promise(resolve => setTimeout(resolve, BOT_CONFIG.OPERATIONAL.RETRY_DELAY_MS));
         return this.makeJitoRequest(method, params);
       }
 
@@ -266,7 +120,7 @@ export class JitoConnection extends Connection {
 
   override async getLatestBlockhash(commitmentOrConfig?: Commitment | ConnectionConfig): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
     try {
-      await this.rateLimiter.checkRateLimit();
+      await this.regularRpcLimiter.checkRateLimit();
       return await this.regularConnection.getLatestBlockhash(commitmentOrConfig);
     } catch (error) {
       logError('Failed to get latest blockhash from regular connection, trying Jito endpoint', { error });
@@ -285,7 +139,7 @@ export class JitoConnection extends Connection {
 
   override async getBalance(publicKey: PublicKey, commitmentOrConfig?: Commitment | ConnectionConfig): Promise<number> {
     try {
-      await this.rateLimiter.checkRateLimit();
+      await this.regularRpcLimiter.checkRateLimit();
       return await this.regularConnection.getBalance(publicKey, commitmentOrConfig);
     } catch (error) {
       logError('Failed to get balance', { error, publicKey: publicKey.toString() });
@@ -295,7 +149,7 @@ export class JitoConnection extends Connection {
 
   override async getAccountInfo(publicKey: PublicKey, commitmentOrConfig?: Commitment | ConnectionConfig): Promise<any> {
     try {
-      await this.rateLimiter.checkRateLimit();
+      await this.regularRpcLimiter.checkRateLimit();
       return await this.regularConnection.getAccountInfo(publicKey, commitmentOrConfig);
     } catch (error) {
       logError('Failed to get account info', { error, publicKey: publicKey.toString() });
@@ -366,7 +220,6 @@ export class JitoConnection extends Connection {
     options?: any
   ): Promise<string> {
     try {
-      await this.rateLimiter.checkRateLimit();
       const transaction = Transaction.from(rawTransaction);
       const serializedTransaction = transaction.serialize().toString('base64');
 

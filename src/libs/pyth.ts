@@ -6,7 +6,7 @@ import SwitchboardProgram from '@switchboard-xyz/sbv2-lite';
 import { Connection, PublicKey } from '@solana/web3.js';
 import BigNumber from 'bignumber.js';
 import { MarketConfig, MarketConfigReserve } from 'global';
-import { logWarning, logError } from './logger';
+import { logWarning, logError, logInfo } from './logger';
 import LRU from 'lru-cache';
 import { BOT_CONFIG } from '../config/settings';
 
@@ -16,10 +16,12 @@ const SWITCHBOARD_V2_ADDRESS = 'SW1TCH7qEPTdLsDHRgPuMQjbQxKdH2aBStViMFnt64f';
 
 let switchboardV2: SwitchboardProgram | undefined;
 
-// Price cache with 10 second TTL
+// Price cache with configurable TTL
 const priceCache = new LRU<string, {
   price: BigNumber;
   timestamp: number;
+  confidence?: number;
+  source: 'pyth' | 'switchboard' | 'fallback';
 }>({
   max: 500,
   ttl: BOT_CONFIG.PRICE_FEEDS.CACHE_TTL_MS,
@@ -31,58 +33,69 @@ export type TokenOracleData = {
   mintAddress: string;
   decimals: BigNumber;
   price: BigNumber;
+  confidence?: number;
+  source: 'pyth' | 'switchboard' | 'fallback';
 };
 
 async function getTokenOracleData(connection: Connection, reserve: MarketConfigReserve): Promise<TokenOracleData | null> {
   try {
-    // Check cache first
-    const cacheKey = `${reserve.liquidityToken.symbol}-${reserve.address}`;
+    const symbol = reserve.liquidityToken.symbol;
+    const cacheKey = `${symbol}-${reserve.address}`;
     const cachedData = priceCache.get(cacheKey);
     
+    // Use cached data if it's not stale
     if (cachedData && Date.now() - cachedData.timestamp < BOT_CONFIG.PRICE_FEEDS.STALE_PRICE_THRESHOLD_MS) {
+      logInfo(`Using cached price for ${symbol}`, {
+        price: cachedData.price.toString(),
+        source: cachedData.source,
+        age: Date.now() - cachedData.timestamp
+      });
+      
       return {
-        symbol: reserve.liquidityToken.symbol,
+        symbol,
         reserveAddress: reserve.address,
         mintAddress: reserve.liquidityToken.mint,
         decimals: new BigNumber(10 ** reserve.liquidityToken.decimals),
         price: cachedData.price,
+        confidence: cachedData.confidence,
+        source: cachedData.source
       };
     }
 
-    let priceData;
-    const oracle = {
-      priceAddress: reserve.pythOracle,
-      switchboardFeedAddress: reserve.switchboardOracle,
-    };
+    let priceData: number | undefined;
+    let confidence: number | undefined;
+    let source: 'pyth' | 'switchboard' | 'fallback' | undefined;
 
     // Try Pyth first
-    if (oracle.priceAddress && oracle.priceAddress !== NULL_ORACLE) {
+    if (reserve.pythOracle && reserve.pythOracle !== NULL_ORACLE) {
       try {
-        const pricePublicKey = new PublicKey(oracle.priceAddress);
+        const pricePublicKey = new PublicKey(reserve.pythOracle);
         const result = await connection.getAccountInfo(pricePublicKey);
         if (result?.data) {
           const priceInfo = parsePriceData(result.data);
-          // Check if price is valid and trading
-          if (priceInfo.price && priceInfo.status === PriceStatus.Trading) {
+          
+          // Validate price confidence
+          const confidenceBps = (priceInfo.confidence || 0) / priceInfo.price * 10000;
+          if (priceInfo.price && 
+              priceInfo.status === PriceStatus.Trading && 
+              confidenceBps <= BOT_CONFIG.PRICE_FEEDS.REQUIRED_CONFIDENCE_BPS) {
             priceData = priceInfo.price;
-            
-            // Cache the valid price
-            priceCache.set(cacheKey, {
-              price: new BigNumber(priceData),
-              timestamp: Date.now()
-            });
+            confidence = priceInfo.confidence;
+            source = 'pyth';
+          } else {
+            logWarning(`Pyth price for ${symbol} rejected - confidence: ${confidenceBps}bps, status: ${priceInfo.status}`);
           }
         }
       } catch (error) {
-        logWarning(`Failed to fetch Pyth price for ${reserve.liquidityToken.symbol}`, { error });
+        logWarning(`Failed to fetch Pyth price for ${symbol}`, { error });
       }
     }
 
     // Try Switchboard if Pyth failed
-    if (!priceData && oracle.switchboardFeedAddress) {
+    if (!priceData && reserve.switchboardOracle) {
       for (let attempt = 1; attempt <= BOT_CONFIG.PRICE_FEEDS.RETRY_ATTEMPTS; attempt++) {
         try {
-          const pricePublicKey = new PublicKey(oracle.switchboardFeedAddress);
+          const pricePublicKey = new PublicKey(reserve.switchboardOracle);
           const info = await connection.getAccountInfo(pricePublicKey);
           if (!info?.data) continue;
 
@@ -90,26 +103,25 @@ async function getTokenOracleData(connection: Connection, reserve: MarketConfigR
           
           if (owner === SWITCHBOARD_V1_ADDRESS) {
             const result = AggregatorState.decodeDelimited(Buffer.from(info.data.slice(1)));
-            priceData = result?.lastRoundResult?.result;
+            if (result?.lastRoundResult?.result) {
+              priceData = result.lastRoundResult.result;
+              source = 'switchboard';
+            }
           } 
           else if (owner === SWITCHBOARD_V2_ADDRESS) {
             if (!switchboardV2) {
               switchboardV2 = await SwitchboardProgram.loadMainnet(connection);
             }
             const result = switchboardV2.decodeLatestAggregatorValue(info);
-            priceData = result?.toNumber();
+            if (result?.toNumber()) {
+              priceData = result.toNumber();
+              source = 'switchboard';
+            }
           }
           
-          if (priceData) {
-            // Cache the valid price
-            priceCache.set(cacheKey, {
-              price: new BigNumber(priceData),
-              timestamp: Date.now()
-            });
-            break;
-          }
+          if (priceData) break;
         } catch (error) {
-          logWarning(`Failed to fetch Switchboard price for ${reserve.liquidityToken.symbol} (attempt ${attempt}/${BOT_CONFIG.PRICE_FEEDS.RETRY_ATTEMPTS})`, { error });
+          logWarning(`Failed to fetch Switchboard price for ${symbol} (attempt ${attempt}/${BOT_CONFIG.PRICE_FEEDS.RETRY_ATTEMPTS})`, { error });
           if (attempt < BOT_CONFIG.PRICE_FEEDS.RETRY_ATTEMPTS) {
             await new Promise(resolve => setTimeout(resolve, BOT_CONFIG.PRICE_FEEDS.RETRY_DELAY_MS));
           }
@@ -117,17 +129,35 @@ async function getTokenOracleData(connection: Connection, reserve: MarketConfigR
       }
     }
 
+    // Try fallback price for known stable tokens
+    if (!priceData && symbol in BOT_CONFIG.PRICE_FEEDS.FALLBACK_PRICES) {
+      priceData = BOT_CONFIG.PRICE_FEEDS.FALLBACK_PRICES[symbol];
+      source = 'fallback';
+      logInfo(`Using fallback price for ${symbol}`, { price: priceData });
+    }
+
     if (!priceData) {
-      logError(`Failed to get price for ${reserve.liquidityToken.symbol} | reserve ${reserve.address}`);
+      logError(`Failed to get price for ${symbol} | reserve ${reserve.address}`);
       return null;
     }
 
+    // Cache the valid price
+    const price = new BigNumber(priceData);
+    priceCache.set(cacheKey, {
+      price,
+      confidence,
+      timestamp: Date.now(),
+      source: source!
+    });
+
     return {
-      symbol: reserve.liquidityToken.symbol,
+      symbol,
       reserveAddress: reserve.address,
       mintAddress: reserve.liquidityToken.mint,
       decimals: new BigNumber(10 ** reserve.liquidityToken.decimals),
-      price: new BigNumber(priceData),
+      price,
+      confidence,
+      source: source!
     };
   } catch (error) {
     logError(`Error getting oracle data for ${reserve.liquidityToken.symbol}`, { error });
@@ -138,5 +168,24 @@ async function getTokenOracleData(connection: Connection, reserve: MarketConfigR
 export async function getTokensOracleData(connection: Connection, market: MarketConfig) {
   const promises = market.reserves.map((reserve) => getTokenOracleData(connection, reserve));
   const results = await Promise.all(promises);
-  return results.filter(result => result !== null); // Filter out failed price fetches
+  
+  // Filter out failed price fetches and log summary
+  const validResults = results.filter(result => result !== null);
+  const failedCount = results.length - validResults.length;
+  
+  if (failedCount > 0) {
+    logWarning(`Failed to fetch prices for ${failedCount}/${results.length} tokens`);
+  }
+  
+  logInfo('Price feed summary', {
+    total: results.length,
+    valid: validResults.length,
+    failed: failedCount,
+    sources: validResults.reduce((acc, result) => {
+      acc[result!.source] = (acc[result!.source] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>)
+  });
+
+  return validResults as TokenOracleData[];
 }

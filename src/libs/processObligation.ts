@@ -26,6 +26,9 @@ export async function processObligation(
     let currentObligation = obligation;
     
     while (currentObligation) {
+      // Add delay between obligation processing attempts
+      await new Promise(resolve => setTimeout(resolve, BOT_CONFIG.OPERATIONAL.OBLIGATION_PROCESSING_DELAY_MS));
+
       logInfo('Calculating obligation health...');
       const {
         borrowedValue,
@@ -40,6 +43,7 @@ export async function processObligation(
       );
 
       logInfo('Obligation status', {
+        obligationId: currentObligation.pubkey.toString(),
         borrowedValue: borrowedValue.toString(),
         unhealthyBorrowValue: unhealthyBorrowValue.toString(),
         utilizationRatio: `${utilizationRatio.toFixed(2)}%`,
