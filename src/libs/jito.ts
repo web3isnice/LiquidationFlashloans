@@ -27,75 +27,106 @@ class RateLimiter {
   private requestQueue: number[] = [];
   private dailyRequests: number = 0;
   private monthlyRequests: number = 0;
-  private lastReset: {
-    daily: number;
-    monthly: number;
-  } = {
+  private lastReset = {
     daily: Date.now(),
     monthly: Date.now()
   };
+  private backoffDelay = BOT_CONFIG.RPC.RATE_LIMIT.MIN_BACKOFF_MS;
+  private errorCount = 0;
+  private totalRequests = 0;
+  private circuitOpen = false;
+  private lastCircuitBreak = 0;
 
-  private readonly maxRequestsPerSecond: number;
-  private readonly burstRequests: number;
-  private readonly cooldownMs: number;
-  private readonly dailyLimit: number;
-  private readonly monthlyLimit: number;
-
-  constructor(
-    maxRequestsPerSecond: number,
-    burstRequests: number,
-    cooldownMs: number,
-    dailyLimit: number,
-    monthlyLimit: number
-  ) {
-    this.maxRequestsPerSecond = maxRequestsPerSecond;
-    this.burstRequests = burstRequests;
-    this.cooldownMs = cooldownMs;
-    this.dailyLimit = dailyLimit;
-    this.monthlyLimit = monthlyLimit;
+  constructor() {
+    // Reset counters periodically
+    setInterval(() => this.resetCounters(), 60000); // Check every minute
   }
 
   private resetCounters() {
     const now = Date.now();
     
-    // Reset daily counter if 24 hours have passed
+    // Reset daily counter
     if (now - this.lastReset.daily >= 86400000) {
       this.dailyRequests = 0;
       this.lastReset.daily = now;
+      this.errorCount = 0;
+      this.totalRequests = 0;
     }
     
-    // Reset monthly counter if 30 days have passed
+    // Reset monthly counter
     if (now - this.lastReset.monthly >= 2592000000) {
       this.monthlyRequests = 0;
       this.lastReset.monthly = now;
     }
+
+    // Clean up old requests from queue
+    const oneSecondAgo = now - 1000;
+    this.requestQueue = this.requestQueue.filter(timestamp => timestamp > oneSecondAgo);
   }
 
-  private async handleLimitExceeded(type: 'burst' | 'daily' | 'monthly'): Promise<void> {
+  private async handleRateLimit(type: 'burst' | 'daily' | 'monthly'): Promise<void> {
     const delays = {
-      burst: this.cooldownMs,
-      daily: 60000, // 1 minute
-      monthly: 300000 // 5 minutes
+      burst: this.backoffDelay,
+      daily: Math.max(60000, this.backoffDelay), // At least 1 minute
+      monthly: Math.max(300000, this.backoffDelay) // At least 5 minutes
     };
 
-    logWarning(`${type.charAt(0).toUpperCase() + type.slice(1)} rate limit reached, cooling down...`);
+    logWarning(`${type} rate limit reached, backing off for ${delays[type]}ms`);
     await new Promise(resolve => setTimeout(resolve, delays[type]));
+    
+    // Increase backoff delay up to max
+    const newBackoff = Math.min(
+      this.backoffDelay * BOT_CONFIG.RPC.RATE_LIMIT.BACKOFF_MULTIPLIER,
+      BOT_CONFIG.RPC.RATE_LIMIT.MAX_BACKOFF_MS
+    );
+    
+    // Ensure backoff stays within MIN_BACKOFF_MS
+    this.backoffDelay = Math.max(newBackoff, BOT_CONFIG.RPC.RATE_LIMIT.MIN_BACKOFF_MS);
   }
 
-  async checkRateLimit(): Promise<void> {
-    this.resetCounters();
+  private checkCircuitBreaker() {
+    if (this.totalRequests < 100) return false; // Need minimum sample size
     
+    const errorRate = this.errorCount / this.totalRequests;
+    if (errorRate > BOT_CONFIG.RPC.RATE_LIMIT.ERROR_THRESHOLD) {
+      this.circuitOpen = true;
+      this.lastCircuitBreak = Date.now();
+      logWarning(`Circuit breaker triggered - Error rate: ${(errorRate * 100).toFixed(2)}%`);
+      return true;
+    }
+    return false;
+  }
+
+  public recordError() {
+    this.errorCount++;
+    this.checkCircuitBreaker();
+  }
+
+  public async checkRateLimit(): Promise<void> {
+    // Check circuit breaker
+    if (this.circuitOpen) {
+      const now = Date.now();
+      if (now - this.lastCircuitBreak >= BOT_CONFIG.RPC.RATE_LIMIT.CIRCUIT_BREAKER_TIMEOUT_MS) {
+        this.circuitOpen = false;
+        this.errorCount = 0;
+        this.totalRequests = 0;
+      } else {
+        throw new Error('Circuit breaker is open');
+      }
+    }
+
+    this.resetCounters();
     const now = Date.now();
     
     // Check monthly limit
-    if (this.monthlyRequests >= this.monthlyLimit) {
-      await this.handleLimitExceeded('monthly');
+    if (this.monthlyRequests >= BOT_CONFIG.RPC.RATE_LIMIT.MONTHLY_REQUEST_LIMIT) {
+      await this.handleRateLimit('monthly');
       return this.checkRateLimit();
     }
     
     // Check daily limit
-    if (this.dailyRequests >= this.dailyLimit) {
-      await this.handleLimitExceeded('daily');
+    if (this.dailyRequests >= BOT_CONFIG.RPC.RATE_LIMIT.DAILY_REQUEST_LIMIT) {
+      await this.handleRateLimit('daily');
       return this.checkRateLimit();
     }
     
@@ -103,36 +134,43 @@ class RateLimiter {
     this.requestQueue = this.requestQueue.filter(timestamp => now - timestamp < 1000);
     
     // Check burst limit
-    if (this.requestQueue.length >= this.burstRequests) {
-      await this.handleLimitExceeded('burst');
+    if (this.requestQueue.length >= BOT_CONFIG.RPC.RATE_LIMIT.BURST_REQUESTS) {
+      await this.handleRateLimit('burst');
       return this.checkRateLimit();
     }
     
-    // Add request to queues and increment counters
+    // Add request to queue and increment counters
     this.requestQueue.push(now);
     this.dailyRequests++;
     this.monthlyRequests++;
+    this.totalRequests++;
     
     // Adaptive throttling
     if (BOT_CONFIG.RPC.RATE_LIMIT.ENABLE_ADAPTIVE_THROTTLING) {
-      const dailyUsagePercent = (this.dailyRequests / this.dailyLimit) * 100;
-      const monthlyUsagePercent = (this.monthlyRequests / this.monthlyLimit) * 100;
+      const dailyUsagePercent = (this.dailyRequests / BOT_CONFIG.RPC.RATE_LIMIT.DAILY_REQUEST_LIMIT) * 100;
+      const monthlyUsagePercent = (this.monthlyRequests / BOT_CONFIG.RPC.RATE_LIMIT.MONTHLY_REQUEST_LIMIT) * 100;
       
       if (dailyUsagePercent > 90 || monthlyUsagePercent > 90) {
-        await new Promise(resolve => setTimeout(resolve, this.cooldownMs * 2));
+        await new Promise(resolve => setTimeout(resolve, this.backoffDelay * 2));
       } else if (dailyUsagePercent > 75 || monthlyUsagePercent > 75) {
-        await new Promise(resolve => setTimeout(resolve, this.cooldownMs));
+        await new Promise(resolve => setTimeout(resolve, this.backoffDelay));
       }
     }
+
+    // Reset backoff if we've made it this far
+    this.backoffDelay = BOT_CONFIG.RPC.RATE_LIMIT.MIN_BACKOFF_MS;
   }
 
-  getUsageStats() {
+  public getStats() {
     return {
       dailyRequests: this.dailyRequests,
       monthlyRequests: this.monthlyRequests,
-      dailyUsagePercent: (this.dailyRequests / this.dailyLimit) * 100,
-      monthlyUsagePercent: (this.monthlyRequests / this.monthlyLimit) * 100,
-      currentBurst: this.requestQueue.length
+      dailyUsagePercent: (this.dailyRequests / BOT_CONFIG.RPC.RATE_LIMIT.DAILY_REQUEST_LIMIT) * 100,
+      monthlyUsagePercent: (this.monthlyRequests / BOT_CONFIG.RPC.RATE_LIMIT.MONTHLY_REQUEST_LIMIT) * 100,
+      currentBurst: this.requestQueue.length,
+      errorRate: this.totalRequests ? (this.errorCount / this.totalRequests) * 100 : 0,
+      circuitBreakerStatus: this.circuitOpen ? 'OPEN' : 'CLOSED',
+      currentBackoffDelay: this.backoffDelay
     };
   }
 }
@@ -159,13 +197,7 @@ export class JitoConnection extends Connection {
     super(regularEndpoint, commitmentOrConfig);
     this.jitoEndpoint = jitoEndpoint;
     this.regularConnection = new Connection(regularEndpoint, commitmentOrConfig);
-    this.rateLimiter = new RateLimiter(
-      BOT_CONFIG.RPC.RATE_LIMIT.MAX_REQUESTS_PER_SECOND,
-      BOT_CONFIG.RPC.RATE_LIMIT.BURST_REQUESTS,
-      BOT_CONFIG.RPC.RATE_LIMIT.COOLDOWN_MS,
-      BOT_CONFIG.RPC.RATE_LIMIT.DAILY_REQUEST_LIMIT,
-      BOT_CONFIG.RPC.RATE_LIMIT.MONTHLY_REQUEST_LIMIT
-    );
+    this.rateLimiter = new RateLimiter();
     logInfo('Initialized Jito connection', { jitoEndpoint, regularEndpoint });
   }
 
@@ -174,7 +206,7 @@ export class JitoConnection extends Connection {
   }
 
   public getRateLimiterStats() {
-    return this.rateLimiter.getUsageStats();
+    return this.rateLimiter.getStats();
   }
 
   private async makeJitoRequest<T>(method: string, params: any[]): Promise<T> {
@@ -204,11 +236,14 @@ export class JitoConnection extends Connection {
       );
 
       if (response.data.error) {
+        this.rateLimiter.recordError();
         throw new Error(`Jito error: ${JSON.stringify(response.data.error)}`);
       }
 
       return response.data.result as T;
     } catch (error) {
+      this.rateLimiter.recordError();
+      
       logWarning(`Jito RPC request failed: ${method}`, {
         endpoint: this.jitoEndpoint,
         attempt: this.retryCount + 1,

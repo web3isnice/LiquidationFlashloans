@@ -157,6 +157,7 @@ async function runLiquidator() {
     logInfo('Starting main liquidation loop...');
     while (true) {
       logInfo(`Starting epoch ${epoch}`);
+      
       for (const market of markets) {
         try {
           // Periodic health check
@@ -166,9 +167,12 @@ async function runLiquidator() {
           }
 
           logInfo(`Processing market: ${market.name}`);
+          
+          // Get oracle data with retries and filtering
           const tokensOracle = await getTokensOracleData(connection, market);
           if (!tokensOracle || tokensOracle.length === 0) {
-            throw new Error('Failed to fetch token oracle data');
+            logWarning(`Skipping market ${market.name} - no valid price data available`);
+            continue; // Skip this market and move to next
           }
 
           const allObligations = await getObligations(connection, market.address);
@@ -185,41 +189,47 @@ async function runLiquidator() {
             marketName: market.name,
             marketAddress: market.address,
             obligationCount: allObligations.length,
-            reserveCount: allReserves.length
+            reserveCount: allReserves.length,
+            validPriceFeeds: tokensOracle.length
           });
 
+          // Process obligations in smaller batches
           for (let i = 0; i < allObligations.length; i += BOT_CONFIG.OPERATIONAL.LIQUIDATION_BATCH_SIZE) {
             const batch = allObligations.slice(i, i + BOT_CONFIG.OPERATIONAL.LIQUIDATION_BATCH_SIZE);
+            
             logInfo(`Processing batch ${Math.floor(i/BOT_CONFIG.OPERATIONAL.LIQUIDATION_BATCH_SIZE) + 1}/${Math.ceil(allObligations.length/BOT_CONFIG.OPERATIONAL.LIQUIDATION_BATCH_SIZE)}`);
             
-            await Promise.all(
-              batch.map(obligation => 
-                processObligation(
+            // Process obligations sequentially instead of in parallel
+            for (const obligation of batch) {
+              try {
+                await processObligation(
                   obligation,
                   connection,
                   payer,
                   market,
                   allReserves,
                   tokensOracle
-                ).catch(error => {
-                  logError('Error processing obligation', {
-                    error,
-                    obligationId: obligation?.pubkey.toString(),
-                    market: market.address
-                  });
-                })
-              )
-            );
+                );
+              } catch (error) {
+                logError('Error processing obligation', {
+                  error,
+                  obligationId: obligation?.pubkey.toString(),
+                  market: market.address
+                });
+              }
+              
+              // Add small delay between obligations
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
           }
 
           logInfo('Unwrapping tokens...');
           await unwrapTokens(connection, payer);
           consecutiveErrors = 0;
 
-          if (BOT_CONFIG.THROTTLE) {
-            logInfo(`Throttling for ${BOT_CONFIG.THROTTLE}ms before next market`);
-            await new Promise(resolve => setTimeout(resolve, BOT_CONFIG.THROTTLE));
-          }
+          // Add delay between markets
+          logInfo(`Waiting ${BOT_CONFIG.OPERATIONAL.MARKET_PROCESSING_DELAY_MS}ms before next market`);
+          await new Promise(resolve => setTimeout(resolve, BOT_CONFIG.OPERATIONAL.MARKET_PROCESSING_DELAY_MS));
 
         } catch (error) {
           consecutiveErrors++;
@@ -241,6 +251,7 @@ async function runLiquidator() {
           }
         }
       }
+      
       epoch++;
       logInfo(`Completed epoch ${epoch}`);
     }

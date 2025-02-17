@@ -13,11 +13,8 @@ export const JITO_ENDPOINTS = {
 } as const;
 
 export const DEFAULT_JITO_ENDPOINT = JITO_ENDPOINTS.ny;
-
-// Regular Solana RPC endpoint
 export const DEFAULT_SOLANA_RPC = 'https://api.mainnet-beta.solana.com';
 
-// Bot Configuration
 export const BOT_CONFIG = {
   // Environment
   ENV: process.env.APP || 'production',
@@ -35,7 +32,7 @@ export const BOT_CONFIG = {
   // Financial Settings
   FINANCIAL: {
     MIN_USDC_BUFFER: 1,
-    MIN_SOL_BALANCE: 0.1 * 1e9,
+    MIN_SOL_BALANCE: 0.1 * 1e9, // 0.1 SOL minimum for transaction fees
   },
 
   // Operational Settings
@@ -43,19 +40,20 @@ export const BOT_CONFIG = {
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 1000,
     TRANSACTION_TIMEOUT_MS: 60000,
-    LIQUIDATION_BATCH_SIZE: 3, // Reduced to stay within rate limits
+    LIQUIDATION_BATCH_SIZE: 2, // Process obligations in smaller batches
     STATS_INTERVAL_MS: 300000,
+    MARKET_PROCESSING_DELAY_MS: 2000, // Delay between processing markets
   },
 
   // RPC Settings
   RPC: {
     TIMEOUT_MS: 30000,
-    BATCH_SIZE: 50, // Reduced batch size to manage data transfer
+    BATCH_SIZE: 25, // Reduced batch size
     RATE_LIMIT: {
-      // 10 RPS limit
-      MAX_REQUESTS_PER_SECOND: 8, // Leave some headroom for system operations
-      BURST_REQUESTS: 15, // Small burst allowance
-      COOLDOWN_MS: 2000, // Longer cooldown to ensure we stay under daily limit
+      // RPS settings
+      MAX_REQUESTS_PER_SECOND: 5, // Maximum requests per second
+      BURST_REQUESTS: 8, // Maximum burst requests
+      COOLDOWN_MS: 5000, // Cooldown period after hitting limits
       
       // Monthly limits
       MONTHLY_REQUEST_LIMIT: 2000000, // 2M requests per month
@@ -63,9 +61,31 @@ export const BOT_CONFIG = {
       DATA_TRANSFER_LIMIT_GB: 100, // 100GB data transfer limit
       
       // Additional safeguards
-      REQUEST_TRACKING_WINDOW_MS: 86400000, // 24 hours in milliseconds
-      ENABLE_ADAPTIVE_THROTTLING: true, // Automatically adjust rates based on usage
+      REQUEST_TRACKING_WINDOW_MS: 86400000, // 24 hours
+      ENABLE_ADAPTIVE_THROTTLING: true,
+      
+      // Queue settings
+      QUEUE_SIZE: 100,
+      QUEUE_TIMEOUT_MS: 30000,
+      
+      // Backoff settings
+      MIN_BACKOFF_MS: 1000 as const,
+      MAX_BACKOFF_MS: 60000 as const,
+      BACKOFF_MULTIPLIER: 1.5,
+      
+      // Circuit breaker
+      ERROR_THRESHOLD: 0.1, // 10% error rate threshold
+      CIRCUIT_BREAKER_TIMEOUT_MS: 300000, // 5 minutes
     }
+  },
+
+  // Price Feed Settings
+  PRICE_FEEDS: {
+    CACHE_TTL_MS: 10000, // Cache price feed data for 10 seconds
+    RETRY_ATTEMPTS: 3,
+    RETRY_DELAY_MS: 1000,
+    FALLBACK_TO_SERUM: true, // Use Serum DEX as fallback price source
+    STALE_PRICE_THRESHOLD_MS: 300000, // 5 minutes
   },
 
   // Health Check Settings
